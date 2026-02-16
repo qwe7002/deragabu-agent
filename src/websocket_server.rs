@@ -84,8 +84,9 @@ async fn handle_client(
     let mut client_dpr: f32 = 1.0; // Default DPR until client sends config
     let mut sent_cursor_ids: HashSet<String> = HashSet::new();
 
-    // Heartbeat interval
+    // Heartbeat interval - skip the first immediate tick
     let mut heartbeat_interval = interval(Duration::from_secs(30));
+    heartbeat_interval.tick().await; // consume the immediate first tick
 
     loop {
         tokio::select! {
@@ -141,9 +142,15 @@ async fn handle_client(
                 }
             }
 
-            // Heartbeat
+            // Heartbeat (protobuf MESSAGE_TYPE_HEARTBEAT)
             _ = heartbeat_interval.tick() => {
-                if let Err(e) = write.send(WsMessage::Ping(vec![])).await {
+                let heartbeat_msg = create_heartbeat_message();
+                let mut buf = Vec::new();
+                if let Err(e) = heartbeat_msg.encode(&mut buf) {
+                    error!("Heartbeat encode failed ({}): {}", peer_addr, e);
+                    continue;
+                }
+                if let Err(e) = write.send(WsMessage::Binary(buf.into())).await {
                     error!("Heartbeat send failed ({}): {}", peer_addr, e);
                     break;
                 }
@@ -156,6 +163,13 @@ async fn handle_client(
                     Some(Ok(WsMessage::Close(_))) => {
                         info!("Client closed connection: {}", peer_addr);
                         break;
+                    }
+                    Some(Ok(WsMessage::Ping(data))) => {
+                        debug!("Received Ping from {}, sending Pong", peer_addr);
+                        if let Err(e) = write.send(WsMessage::Pong(data)).await {
+                            error!("Pong send failed ({}): {}", peer_addr, e);
+                            break;
+                        }
                     }
                     Some(Ok(WsMessage::Pong(_))) => {
                         debug!("Received Pong: {}", peer_addr);
@@ -224,6 +238,20 @@ fn parse_dpr_from_json(json: &str) -> Option<f32> {
         .unwrap_or(after_colon.len());
     let num_str = after_colon[..num_end].trim();
     num_str.parse::<f32>().ok()
+}
+
+/// Create a heartbeat message (protobuf-based heartbeat)
+fn create_heartbeat_message() -> CursorMessage {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    CursorMessage {
+        r#type: MessageType::Heartbeat.into(),
+        payload: None,
+        timestamp,
+    }
 }
 
 /// Create a cursor signal message (tells client to switch to a cached cursor)
