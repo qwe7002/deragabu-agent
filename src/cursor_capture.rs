@@ -74,6 +74,45 @@ enum CaptureResult {
     Native(String),
 }
 
+/// Summary of XOR pixel spatial distribution for cursor shape identification
+struct XorShape {
+    /// Number of XOR pixels
+    count: u32,
+    /// Bounding box of XOR pixels
+    min_x: u32,
+    max_x: u32,
+    min_y: u32,
+    max_y: u32,
+}
+
+impl XorShape {
+    fn new() -> Self {
+        XorShape {
+            count: 0,
+            min_x: u32::MAX,
+            max_x: 0,
+            min_y: u32::MAX,
+            max_y: 0,
+        }
+    }
+
+    fn add_pixel(&mut self, x: u32, y: u32) {
+        self.count += 1;
+        self.min_x = self.min_x.min(x);
+        self.max_x = self.max_x.max(x);
+        self.min_y = self.min_y.min(y);
+        self.max_y = self.max_y.max(y);
+    }
+
+    fn xor_width(&self) -> u32 {
+        if self.count == 0 { 0 } else { self.max_x - self.min_x + 1 }
+    }
+
+    fn xor_height(&self) -> u32 {
+        if self.count == 0 { 0 } else { self.max_y - self.min_y + 1 }
+    }
+}
+
 /// Run cursor capture loop
 pub async fn run_cursor_capture(tx: mpsc::Sender<CursorEvent>) -> Result<()> {
     // Enable DPI awareness
@@ -358,11 +397,11 @@ unsafe fn capture_full_cursor(hcursor: HCURSOR) -> Result<CaptureResult> {
         let result = get_monochrome_cursor_rgba(icon_info2.hbmMask);
         let _ = DeleteObject(icon_info2.hbmMask);
         DestroyIcon(hicon_copy)?;
-        let (rgba, w, h, has_xor) = result?;
+        let (rgba, w, h, has_xor, xor_shape) = result?;
 
         if has_xor {
             // Monochrome cursor with XOR pixels - use native cursor
-            let css_name = identify_system_cursor(hcursor);
+            let css_name = identify_system_cursor(hcursor, w, h, hotspot_x, hotspot_y, &xor_shape);
             info!("Monochrome XOR cursor detected, native cursor: {}", css_name);
             return Ok(CaptureResult::Native(css_name));
         }
@@ -385,11 +424,11 @@ unsafe fn capture_full_cursor(hcursor: HCURSOR) -> Result<CaptureResult> {
 
     // Color cursor - render first frame to check for XOR pixels
     let hicon_raw: HICON = mem::transmute(hcursor);
-    let (first_frame, has_xor) = render_cursor_frame_with_xor_detection(hicon_raw, width, height, 0)?;
+    let (first_frame, has_xor, xor_shape) = render_cursor_frame_with_xor_detection(hicon_raw, width, height, 0)?;
 
     if has_xor {
         // Color cursor with XOR pixels - use native cursor
-        let css_name = identify_system_cursor(hcursor);
+        let css_name = identify_system_cursor(hcursor, width, height, hotspot_x, hotspot_y, &xor_shape);
         info!("Color XOR cursor detected, native cursor: {}", css_name);
         return Ok(CaptureResult::Native(css_name));
     }
@@ -628,13 +667,14 @@ unsafe fn render_cursor_frame(
 }
 
 /// Render a single cursor frame and detect XOR pixels.
-/// Returns (RGBA data, has_xor) where has_xor indicates the frame contains XOR/inversion pixels.
+/// Returns (RGBA data, has_xor, xor_shape) where has_xor indicates the frame contains XOR/inversion pixels,
+/// and xor_shape provides spatial distribution of XOR pixels for cursor identification.
 unsafe fn render_cursor_frame_with_xor_detection(
     hicon: HICON,
     width: u32,
     height: u32,
     step: u32,
-) -> Result<(Vec<u8>, bool)> {
+) -> Result<(Vec<u8>, bool, XorShape)> {
     let hdc_screen = GetDC(None);
     if hdc_screen.is_invalid() {
         return Err(anyhow!("GetDC failed"));
@@ -708,10 +748,11 @@ unsafe fn render_cursor_frame_with_xor_detection(
     let _ = DeleteDC(hdc_mem);
     ReleaseDC(None, hdc_screen);
 
-    // Compute RGBA with XOR detection
+    // Compute RGBA with XOR detection and shape tracking
     let pixel_count = (width * height) as usize;
     let mut rgba = vec![0u8; pixel_count * 4];
     let mut has_xor = false;
+    let mut xor_shape = XorShape::new();
 
     for i in 0..pixel_count {
         let idx = i * 4;
@@ -727,6 +768,9 @@ unsafe fn render_cursor_frame_with_xor_detection(
 
         if is_xor {
             has_xor = true;
+            let px = (i % width as usize) as u32;
+            let py = (i / width as usize) as u32;
+            xor_shape.add_pixel(px, py);
             // Still produce valid RGBA for fallback (inverted XOR mask)
             rgba[i * 4] = (255 - r_black) as u8;
             rgba[i * 4 + 1] = (255 - g_black) as u8;
@@ -756,12 +800,20 @@ unsafe fn render_cursor_frame_with_xor_detection(
         }
     }
 
-    Ok((rgba, has_xor))
+    Ok((rgba, has_xor, xor_shape))
 }
 
 /// Identify a system cursor by comparing its HCURSOR handle with known system cursors.
-/// Returns a CSS cursor value string.
-unsafe fn identify_system_cursor(hcursor: HCURSOR) -> String {
+/// Falls back to analyzing XOR pixel shape when handle comparison fails (e.g. custom cursors).
+unsafe fn identify_system_cursor(
+    hcursor: HCURSOR,
+    cursor_width: u32,
+    cursor_height: u32,
+    hotspot_x: i32,
+    hotspot_y: i32,
+    xor_shape: &XorShape,
+) -> String {
+    // First try: exact handle comparison with system cursors
     let cursor_mappings: &[(PCWSTR, &str)] = &[
         (IDC_ARROW, "default"),
         (IDC_IBEAM, "text"),
@@ -782,15 +834,103 @@ unsafe fn identify_system_cursor(hcursor: HCURSOR) -> String {
     for (idc, css_name) in cursor_mappings {
         if let Ok(sys_cursor) = LoadCursorW(None, *idc) {
             if sys_cursor.0 == hcursor.0 {
-                debug!("Identified system cursor: {} -> {}", idc.0 as usize, css_name);
+                debug!("Identified system cursor by handle: {} -> {}", idc.0 as usize, css_name);
                 return css_name.to_string();
             }
         }
     }
 
-    // Could not identify - use "default" as fallback
-    debug!("Unknown XOR cursor handle {:?}, using 'default'", hcursor.0);
-    "default".to_string()
+    // Fallback: analyze XOR pixel shape to determine cursor type
+    let result = guess_cursor_from_xor_shape(cursor_width, cursor_height, hotspot_x, hotspot_y, xor_shape);
+    debug!(
+        "Identified cursor by XOR shape: handle={:?}, xor={}x{} ({}px), hotspot=({},{}), result={}",
+        hcursor.0, xor_shape.xor_width(), xor_shape.xor_height(), xor_shape.count,
+        hotspot_x, hotspot_y, result
+    );
+    result
+}
+
+/// Guess CSS cursor type from XOR pixel spatial distribution.
+/// Analyzes bounding box aspect ratio and hotspot position.
+fn guess_cursor_from_xor_shape(
+    cursor_width: u32,
+    cursor_height: u32,
+    hotspot_x: i32,
+    hotspot_y: i32,
+    xor_shape: &XorShape,
+) -> String {
+    if xor_shape.count == 0 {
+        return "default".to_string();
+    }
+
+    let xor_w = xor_shape.xor_width() as f32;
+    let xor_h = xor_shape.xor_height() as f32;
+    let aspect = xor_h / xor_w.max(1.0);
+
+    // Check if hotspot is roughly centered in the cursor
+    let hx_ratio = hotspot_x as f32 / cursor_width.max(1) as f32;
+    let hy_ratio = hotspot_y as f32 / cursor_height.max(1) as f32;
+    let hotspot_centered = (hx_ratio - 0.5).abs() < 0.25 && (hy_ratio - 0.5).abs() < 0.25;
+
+    // Check if hotspot is near top-left (typical for arrow/pointer cursors)
+    let hotspot_top_left = hx_ratio < 0.3 && hy_ratio < 0.3;
+
+    if hotspot_top_left {
+        return "default".to_string();
+    }
+
+    if !hotspot_centered {
+        // Non-centered, non-top-left hotspot - unusual, use default
+        return "default".to_string();
+    }
+
+    // Centered hotspot with XOR pixels - likely a resize, crosshair, or move cursor
+    // Use aspect ratio of XOR pixel bounding box to distinguish
+
+    // Very narrow and tall: text cursor (I-beam)
+    if aspect > 3.0 && xor_w < cursor_width as f32 * 0.3 {
+        return "text".to_string();
+    }
+
+    // Taller than wide: vertical resize (ns-resize / row-resize)
+    if aspect > 1.4 {
+        return "ns-resize".to_string();
+    }
+
+    // Wider than tall: horizontal resize (ew-resize / col-resize)
+    if aspect < 0.7 {
+        return "ew-resize".to_string();
+    }
+
+    // Roughly square XOR region with centered hotspot
+    // Distinguish between diagonal resize, crosshair, and move
+    // Check if XOR pixels are concentrated along diagonals
+    let xor_cx = (xor_shape.min_x + xor_shape.max_x) as f32 / 2.0;
+    let xor_cy = (xor_shape.min_y + xor_shape.max_y) as f32 / 2.0;
+    let cursor_cx = cursor_width as f32 / 2.0;
+    let cursor_cy = cursor_height as f32 / 2.0;
+
+    // If XOR center is offset towards NW-SE diagonal
+    let dx = xor_cx - cursor_cx;
+    let dy = xor_cy - cursor_cy;
+
+    if dx.abs() > cursor_width as f32 * 0.1 || dy.abs() > cursor_height as f32 * 0.1 {
+        // XOR region is offset from center
+        if (dx > 0.0) == (dy > 0.0) {
+            return "nwse-resize".to_string();
+        } else {
+            return "nesw-resize".to_string();
+        }
+    }
+
+    // Centered, roughly square XOR region - could be move or crosshair
+    // Move cursor typically covers more area than crosshair
+    let coverage = xor_shape.count as f32 / (cursor_width * cursor_height) as f32;
+    if coverage > 0.05 {
+        "move".to_string()
+    } else {
+        "crosshair".to_string()
+    }
 }
 
 /// Encode RGBA pixels as a static (single-frame) lossless WebP
@@ -824,10 +964,10 @@ fn encode_animated_webp(
 }
 
 /// Get RGBA pixels from a monochrome cursor mask bitmap.
-/// Returns (rgba, width, height, has_xor) where has_xor indicates XOR inversion pixels exist.
+/// Returns (rgba, width, height, has_xor, xor_shape) where has_xor indicates XOR inversion pixels exist.
 unsafe fn get_monochrome_cursor_rgba(
     hmask: windows::Win32::Graphics::Gdi::HBITMAP,
-) -> Result<(Vec<u8>, u32, u32, bool)> {
+) -> Result<(Vec<u8>, u32, u32, bool, XorShape)> {
     let hdc = CreateCompatibleDC(None);
     if hdc.is_invalid() {
         return Err(anyhow!("CreateCompatibleDC failed"));
@@ -882,6 +1022,7 @@ unsafe fn get_monochrome_cursor_rgba(
     let row_bytes = (width * 4) as usize;
     let mut rgba = vec![0u8; (width * height * 4) as usize];
     let mut has_xor = false;
+    let mut xor_shape = XorShape::new();
 
     for y in 0..height as usize {
         for x in 0..width as usize {
@@ -907,6 +1048,7 @@ unsafe fn get_monochrome_cursor_rgba(
             } else if and_val == 0xFF && xor_val == 0xFF {
                 // AND=1, XOR=1: screen inversion area
                 has_xor = true;
+                xor_shape.add_pixel(x as u32, y as u32);
                 rgba[out_idx] = 0;
                 rgba[out_idx + 1] = 0;
                 rgba[out_idx + 2] = 0;
@@ -927,7 +1069,7 @@ unsafe fn get_monochrome_cursor_rgba(
         }
     }
 
-    Ok((rgba, width, height, has_xor))
+    Ok((rgba, width, height, has_xor, xor_shape))
 }
 
 /// Get current timestamp (milliseconds)
