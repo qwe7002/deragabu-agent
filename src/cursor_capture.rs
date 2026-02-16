@@ -13,16 +13,12 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, SetProcessDpiAwareness, PROCESS_PER_MONITOR_DPI_AWARE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CopyIcon, DestroyIcon, DrawIconEx, GetCursorInfo, GetIconInfo, LoadCursorW, CURSORINFO, CURSOR_SHOWING,
+    CopyIcon, DestroyIcon, DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING,
     DI_NORMAL, HCURSOR, HICON, ICONINFO,
-    IDC_ARROW, IDC_IBEAM, IDC_WAIT, IDC_CROSS, IDC_UPARROW,
-    IDC_SIZENWSE, IDC_SIZENESW, IDC_SIZEWE, IDC_SIZENS, IDC_SIZEALL,
-    IDC_NO, IDC_HAND, IDC_APPSTARTING, IDC_HELP,
 };
-use windows::core::PCWSTR;
 
 use crate::cursor::{
-    cursor_message::Payload, CursorData, CursorMessage, NativeCursor, MessageType,
+    cursor_message::Payload, CursorData, CursorMessage, MessageType,
 };
 
 /// Cursor event for broadcasting to clients
@@ -32,8 +28,6 @@ pub enum CursorEvent {
     CursorChanged(String),
     /// Cursor hidden
     CursorHidden,
-    /// XOR/inversion cursor detected - client should use native CSS cursor
-    CursorNative(String),
 }
 
 /// Cached cursor data with pre-encoded WebP (static or animated)
@@ -66,91 +60,25 @@ const ANIM_FRAME_DELAY_MS: i32 = 60;
 /// Maximum animation frames to probe (safety limit)
 const MAX_ANIM_FRAMES: u32 = 120;
 
-/// Result of capturing a cursor - either an image or a native cursor signal
+/// Result of capturing a cursor
 enum CaptureResult {
     /// Successfully captured cursor image
     Cursor(CachedCursor),
-    /// XOR cursor detected - use native CSS cursor with given name
-    Native(String),
 }
 
-/// Summary of XOR pixel spatial distribution for cursor shape identification.
-/// Tracks pixel count, bounding box, and coordinate sums for variance computation.
+/// Summary of XOR pixel statistics for logging
 struct XorShape {
     /// Number of XOR pixels
     count: u32,
-    /// Bounding box of XOR pixels
-    min_x: u32,
-    max_x: u32,
-    min_y: u32,
-    max_y: u32,
-    /// Sums for variance calculation
-    sum_x: f64,
-    sum_y: f64,
-    sum_x2: f64,
-    sum_y2: f64,
-    /// Sum of x*y for covariance (diagonal detection)
-    sum_xy: f64,
 }
 
 impl XorShape {
     fn new() -> Self {
-        XorShape {
-            count: 0,
-            min_x: u32::MAX,
-            max_x: 0,
-            min_y: u32::MAX,
-            max_y: 0,
-            sum_x: 0.0,
-            sum_y: 0.0,
-            sum_x2: 0.0,
-            sum_y2: 0.0,
-            sum_xy: 0.0,
-        }
+        XorShape { count: 0 }
     }
 
-    fn add_pixel(&mut self, x: u32, y: u32) {
+    fn add_pixel(&mut self, _x: u32, _y: u32) {
         self.count += 1;
-        self.min_x = self.min_x.min(x);
-        self.max_x = self.max_x.max(x);
-        self.min_y = self.min_y.min(y);
-        self.max_y = self.max_y.max(y);
-        let xf = x as f64;
-        let yf = y as f64;
-        self.sum_x += xf;
-        self.sum_y += yf;
-        self.sum_x2 += xf * xf;
-        self.sum_y2 += yf * yf;
-        self.sum_xy += xf * yf;
-    }
-
-    fn xor_width(&self) -> u32 {
-        if self.count == 0 { 0 } else { self.max_x - self.min_x + 1 }
-    }
-
-    fn xor_height(&self) -> u32 {
-        if self.count == 0 { 0 } else { self.max_y - self.min_y + 1 }
-    }
-
-    /// Variance of X coordinates
-    fn var_x(&self) -> f64 {
-        if self.count < 2 { return 0.0; }
-        let n = self.count as f64;
-        (self.sum_x2 / n) - (self.sum_x / n).powi(2)
-    }
-
-    /// Variance of Y coordinates
-    fn var_y(&self) -> f64 {
-        if self.count < 2 { return 0.0; }
-        let n = self.count as f64;
-        (self.sum_y2 / n) - (self.sum_y / n).powi(2)
-    }
-
-    /// Covariance of X and Y coordinates (positive = NW-SE correlation)
-    fn cov_xy(&self) -> f64 {
-        if self.count < 2 { return 0.0; }
-        let n = self.count as f64;
-        (self.sum_xy / n) - (self.sum_x / n) * (self.sum_y / n)
     }
 }
 
@@ -264,17 +192,6 @@ pub fn create_hide_message() -> CursorMessage {
     }
 }
 
-/// Create native cursor message (tells client to use local/CSS cursor rendering)
-pub fn create_native_cursor_message(cursor_name: &str) -> CursorMessage {
-    CursorMessage {
-        r#type: MessageType::CursorNative.into(),
-        payload: Some(Payload::NativeCursor(NativeCursor {
-            cursor_name: cursor_name.to_string(),
-        })),
-        timestamp: get_timestamp(),
-    }
-}
-
 /// Capture current cursor and return event if changed.
 fn capture_cursor() -> Result<Option<CursorEvent>> {
     unsafe {
@@ -321,55 +238,45 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
         // Capture the cursor (with all animation frames if animated)
         let result = capture_full_cursor(hcursor)?;
 
-        match result {
-            CaptureResult::Native(css_name) => {
-                // XOR cursor - tell client to use native CSS cursor
-                let native_id = format!("native:{}", css_name);
-                *LAST_CURSOR_ID.lock().unwrap() = Some(native_id.clone());
-                info!("XOR cursor detected, using native cursor: {}", css_name);
-                Ok(Some(CursorEvent::CursorNative(css_name)))
-            }
-            CaptureResult::Cursor(cached) => {
-                let cursor_id = cached.id.clone();
+        let CaptureResult::Cursor(cached) = result;
+        let cursor_id = cached.id.clone();
 
-                // Update last cursor ID
-                *LAST_CURSOR_ID.lock().unwrap() = Some(cursor_id.clone());
+        // Update last cursor ID
+        *LAST_CURSOR_ID.lock().unwrap() = Some(cursor_id.clone());
 
-                // Check if already in cache
-                {
-                    let cache_guard = CURSOR_CACHE.lock().unwrap();
-                    let cache = cache_guard.as_ref().unwrap();
-                    if cache.contains_key(&cursor_id) {
-                        debug!("Cursor already cached: {}", cursor_id);
-                        return Ok(Some(CursorEvent::CursorChanged(cursor_id)));
-                    }
-                }
-
-                // Cache the new cursor
-                info!(
-                    "New cursor: id={}, {}x{}, animated={}, frames={}, webp={} bytes",
-                    cursor_id, cached.width, cached.height,
-                    cached.is_animated, cached.frame_count, cached.webp_data.len()
-                );
-
-                {
-                    let mut cache_guard = CURSOR_CACHE.lock().unwrap();
-                    let cache = cache_guard.as_mut().unwrap();
-                    cache.insert(cursor_id.clone(), cached);
-
-                    // Trim cache if too large
-                    if cache.len() > 50 {
-                        let keys: Vec<_> = cache.keys().cloned().collect();
-                        for key in keys.iter().take(25) {
-                            cache.remove(key);
-                        }
-                        debug!("Cache trimmed to {} entries", cache.len());
-                    }
-                }
-
-                Ok(Some(CursorEvent::CursorChanged(cursor_id)))
+        // Check if already in cache
+        {
+            let cache_guard = CURSOR_CACHE.lock().unwrap();
+            let cache = cache_guard.as_ref().unwrap();
+            if cache.contains_key(&cursor_id) {
+                debug!("Cursor already cached: {}", cursor_id);
+                return Ok(Some(CursorEvent::CursorChanged(cursor_id)));
             }
         }
+
+        // Cache the new cursor
+        info!(
+            "New cursor: id={}, {}x{}, animated={}, frames={}, webp={} bytes",
+            cursor_id, cached.width, cached.height,
+            cached.is_animated, cached.frame_count, cached.webp_data.len()
+        );
+
+        {
+            let mut cache_guard = CURSOR_CACHE.lock().unwrap();
+            let cache = cache_guard.as_mut().unwrap();
+            cache.insert(cursor_id.clone(), cached);
+
+            // Trim cache if too large
+            if cache.len() > 50 {
+                let keys: Vec<_> = cache.keys().cloned().collect();
+                for key in keys.iter().take(25) {
+                    cache.remove(key);
+                }
+                debug!("Cache trimmed to {} entries", cache.len());
+            }
+        }
+
+        Ok(Some(CursorEvent::CursorChanged(cursor_id)))
     }
 }
 
@@ -377,7 +284,7 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
 /// For static cursors: returns a single-frame lossless WebP.
 /// For animated cursors: probes all frames via DrawIconEx step parameter,
 /// then encodes them as an animated WebP.
-/// For XOR/inversion cursors: returns Native with the CSS cursor name.
+/// XOR/inversion cursors are also rendered as images.
 unsafe fn capture_full_cursor(hcursor: HCURSOR) -> Result<CaptureResult> {
     let hicon = CopyIcon(hcursor)?;
     let mut icon_info = ICONINFO::default();
@@ -440,11 +347,29 @@ unsafe fn capture_full_cursor(hcursor: HCURSOR) -> Result<CaptureResult> {
         DestroyIcon(hicon_copy)?;
         let (rgba, w, h, has_xor, xor_shape) = result?;
 
+        // Monochrome cursor with XOR pixels - render the image directly
+        // instead of trying to identify the cursor type
         if has_xor {
-            // Monochrome cursor with XOR pixels - use native cursor
-            let css_name = identify_system_cursor(hcursor, w, h, hotspot_x, hotspot_y, &xor_shape);
-            info!("Monochrome XOR cursor detected, native cursor: {}", css_name);
-            return Ok(CaptureResult::Native(css_name));
+            const XOR_PAD: u32 = 4;
+            info!("Monochrome XOR cursor detected, rendering image directly ({}x{}, {} XOR pixels)", w, h, xor_shape.count);
+            // Expand canvas by 4px on each side for the white outline
+            let (mut expanded, ew, eh) = expand_canvas(&rgba, w, h, XOR_PAD);
+            add_white_outline(&mut expanded, ew, eh, XOR_PAD as i32);
+
+            let webp_data = encode_static_webp(&expanded, ew, eh)?;
+            let cursor_id = format!("cur_{}", &blake3::hash(&expanded).to_hex()[..12]);
+
+            return Ok(CaptureResult::Cursor(CachedCursor {
+                id: cursor_id,
+                webp_data,
+                width: ew,
+                height: eh,
+                hotspot_x: hotspot_x + XOR_PAD as i32,
+                hotspot_y: hotspot_y + XOR_PAD as i32,
+                is_animated: false,
+                frame_count: 1,
+                frame_delay_ms: 0,
+            }));
         }
 
         let webp_data = encode_static_webp(&rgba, w, h)?;
@@ -468,22 +393,42 @@ unsafe fn capture_full_cursor(hcursor: HCURSOR) -> Result<CaptureResult> {
     let (first_frame, has_xor, xor_shape) = render_cursor_frame_with_xor_detection(hicon_raw, width, height, 0)?;
 
     if has_xor {
-        // Color cursor with XOR pixels - use native cursor
-        let css_name = identify_system_cursor(hcursor, width, height, hotspot_x, hotspot_y, &xor_shape);
-        info!("Color XOR cursor detected, native cursor: {}", css_name);
-        return Ok(CaptureResult::Native(css_name));
+        // Color cursor with XOR pixels - render the image directly
+        info!("Color XOR cursor detected, rendering image directly ({}x{}, {} XOR pixels)", width, height, xor_shape.count);
     }
 
-    // No XOR - proceed with normal capture
+    // Proceed with normal capture (works for both XOR and non-XOR cursors)
     // Probe animation frames using the original HCURSOR handle.
     let frames = probe_animation_frames_with_first(hicon_raw, width, height, first_frame)?;
 
     if frames.len() <= 1 {
         // Static cursor
-        let rgba = &frames[0];
+        let rgba = frames[0].clone();
+        
+        // Add 4px white outline for XOR cursors to ensure visibility on dark backgrounds
+        if has_xor {
+            const XOR_PAD: u32 = 4;
+            let (mut expanded, ew, eh) = expand_canvas(&rgba, width, height, XOR_PAD);
+            add_white_outline(&mut expanded, ew, eh, XOR_PAD as i32);
 
-        let webp_data = encode_static_webp(rgba, width, height)?;
-        let cursor_id = format!("cur_{}", &blake3::hash(rgba).to_hex()[..12]);
+            let webp_data = encode_static_webp(&expanded, ew, eh)?;
+            let cursor_id = format!("cur_{}", &blake3::hash(&expanded).to_hex()[..12]);
+
+            return Ok(CaptureResult::Cursor(CachedCursor {
+                id: cursor_id,
+                webp_data,
+                width: ew,
+                height: eh,
+                hotspot_x: hotspot_x + XOR_PAD as i32,
+                hotspot_y: hotspot_y + XOR_PAD as i32,
+                is_animated: false,
+                frame_count: 1,
+                frame_delay_ms: 0,
+            }));
+        }
+
+        let webp_data = encode_static_webp(&rgba, width, height)?;
+        let cursor_id = format!("cur_{}", &blake3::hash(&rgba).to_hex()[..12]);
 
         Ok(CaptureResult::Cursor(CachedCursor {
             id: cursor_id,
@@ -844,131 +789,85 @@ unsafe fn render_cursor_frame_with_xor_detection(
     Ok((rgba, has_xor, xor_shape))
 }
 
-/// Identify a system cursor by comparing its HCURSOR handle with known system cursors.
-/// Falls back to analyzing XOR pixel shape when handle comparison fails (e.g. custom cursors).
-unsafe fn identify_system_cursor(
-    hcursor: HCURSOR,
-    cursor_width: u32,
-    cursor_height: u32,
-    hotspot_x: i32,
-    hotspot_y: i32,
-    xor_shape: &XorShape,
-) -> String {
-    // First try: exact handle comparison with system cursors
-    let cursor_mappings: &[(PCWSTR, &str)] = &[
-        (IDC_ARROW, "default"),
-        (IDC_IBEAM, "text"),
-        (IDC_WAIT, "wait"),
-        (IDC_CROSS, "crosshair"),
-        (IDC_UPARROW, "default"),
-        (IDC_SIZENWSE, "nwse-resize"),
-        (IDC_SIZENESW, "nesw-resize"),
-        (IDC_SIZEWE, "ew-resize"),
-        (IDC_SIZENS, "ns-resize"),
-        (IDC_SIZEALL, "move"),
-        (IDC_NO, "not-allowed"),
-        (IDC_HAND, "pointer"),
-        (IDC_APPSTARTING, "progress"),
-        (IDC_HELP, "help"),
-    ];
+/// Expand the canvas by `pad` pixels on each side, copying original pixels to the center.
+/// Returns the new RGBA buffer with updated dimensions.
+fn expand_canvas(rgba: &[u8], width: u32, height: u32, pad: u32) -> (Vec<u8>, u32, u32) {
+    let old_w = width as usize;
+    let old_h = height as usize;
+    let new_w = old_w + (pad as usize) * 2;
+    let new_h = old_h + (pad as usize) * 2;
+    let mut new_rgba = vec![0u8; new_w * new_h * 4];
 
-    for (idc, css_name) in cursor_mappings {
-        if let Ok(sys_cursor) = LoadCursorW(None, *idc) {
-            if sys_cursor.0 == hcursor.0 {
-                debug!("Identified system cursor by handle: {} -> {}", idc.0 as usize, css_name);
-                return css_name.to_string();
+    for y in 0..old_h {
+        for x in 0..old_w {
+            let src = (y * old_w + x) * 4;
+            let dst = ((y + pad as usize) * new_w + (x + pad as usize)) * 4;
+            new_rgba[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+        }
+    }
+
+    (new_rgba, new_w as u32, new_h as u32)
+}
+
+/// Add a white outline of `radius` pixels around opaque pixels for better visibility.
+/// This helps XOR cursors (rendered as dark pixels) be visible on dark backgrounds.
+fn add_white_outline(rgba: &mut [u8], width: u32, height: u32, radius: i32) {
+    let w = width as usize;
+    let h = height as usize;
+    let r2 = (radius * radius) as f32;
+
+    // First pass: identify transparent pixels within `radius` of any opaque pixel
+    let mut outline_pixels = Vec::new();
+
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) * 4;
+            // Skip pixels that already have content
+            if rgba[idx + 3] > 0 {
+                continue;
+            }
+
+            // Check if any opaque pixel is within the radius
+            let mut min_dist2 = f32::MAX;
+            let y_start = (y as i32 - radius).max(0) as usize;
+            let y_end = (y as i32 + radius).min(h as i32 - 1) as usize;
+            let x_start = (x as i32 - radius).max(0) as usize;
+            let x_end = (x as i32 + radius).min(w as i32 - 1) as usize;
+
+            'outer: for ny in y_start..=y_end {
+                for nx in x_start..=x_end {
+                    let n_idx = (ny * w + nx) * 4;
+                    if rgba[n_idx + 3] > 200 {
+                        let dx = x as f32 - nx as f32;
+                        let dy = y as f32 - ny as f32;
+                        let d2 = dx * dx + dy * dy;
+                        if d2 < min_dist2 {
+                            min_dist2 = d2;
+                        }
+                        if d2 <= 1.0 {
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+
+            if min_dist2 <= r2 {
+                // Alpha fades from 255 at distance 0 to 0 at the edge
+                let dist = min_dist2.sqrt();
+                let alpha = ((1.0 - dist / radius as f32) * 255.0).clamp(0.0, 255.0) as u8;
+                if alpha > 0 {
+                    outline_pixels.push((idx, alpha));
+                }
             }
         }
     }
 
-    // Fallback: analyze XOR pixel shape to determine cursor type
-    let result = guess_cursor_from_xor_shape(cursor_width, cursor_height, hotspot_x, hotspot_y, xor_shape);
-    debug!(
-        "Identified cursor by XOR shape: handle={:?}, xor={}x{} ({}px), hotspot=({},{}), result={}",
-        hcursor.0, xor_shape.xor_width(), xor_shape.xor_height(), xor_shape.count,
-        hotspot_x, hotspot_y, result
-    );
-    result
-}
-
-/// Guess CSS cursor type from XOR pixel spatial distribution.
-/// Uses variance of pixel coordinates and covariance for orientation detection.
-fn guess_cursor_from_xor_shape(
-    cursor_width: u32,
-    cursor_height: u32,
-    hotspot_x: i32,
-    hotspot_y: i32,
-    xor_shape: &XorShape,
-) -> String {
-    if xor_shape.count == 0 {
-        return "default".to_string();
-    }
-
-    // Check hotspot position relative to cursor bounds
-    let hx_ratio = hotspot_x as f32 / cursor_width.max(1) as f32;
-    let hy_ratio = hotspot_y as f32 / cursor_height.max(1) as f32;
-
-    // Top-left hotspot = arrow/pointer cursor
-    if hx_ratio < 0.3 && hy_ratio < 0.3 {
-        return "default".to_string();
-    }
-
-    // Non-centered hotspot - unusual, use default
-    let hotspot_centered = (hx_ratio - 0.5).abs() < 0.25 && (hy_ratio - 0.5).abs() < 0.25;
-    if !hotspot_centered {
-        return "default".to_string();
-    }
-
-    // Centered hotspot with XOR pixels - use variance-based orientation detection.
-    // This is much more robust than bounding-box aspect ratio because cursor
-    // arrowheads don't skew the variance as much as they skew the bounding box.
-    let var_x = xor_shape.var_x();
-    let var_y = xor_shape.var_y();
-    let cov_xy = xor_shape.cov_xy();
-
-    let var_ratio = var_y / var_x.max(0.001); // > 1 = vertical spread, < 1 = horizontal spread
-
-    // Correlation coefficient: strong positive = NW-SE diagonal, strong negative = NE-SW diagonal
-    let correlation = cov_xy / (var_x.sqrt() * var_y.sqrt()).max(0.001);
-
-    // Very narrow and tall XOR region: text cursor (I-beam)
-    let xor_w = xor_shape.xor_width() as f32;
-    if var_ratio > 6.0 && xor_w < cursor_width as f32 * 0.3 {
-        return "text".to_string();
-    }
-
-    debug!(
-        "XOR shape analysis: var_x={:.1}, var_y={:.1}, ratio={:.2}, corr={:.3}, bbox={}x{}",
-        var_x, var_y, var_ratio, correlation,
-        xor_shape.xor_width(), xor_shape.xor_height()
-    );
-
-    // Check for strong diagonal correlation first (diagonal resize cursors)
-    if correlation.abs() > 0.5 {
-        // Significant diagonal alignment
-        if correlation > 0.0 {
-            return "nwse-resize".to_string();
-        } else {
-            return "nesw-resize".to_string();
-        }
-    }
-
-    // Vertical spread dominates: ns-resize / row-resize (↕)
-    if var_ratio > 1.3 {
-        return "ns-resize".to_string();
-    }
-
-    // Horizontal spread dominates: ew-resize / col-resize (↔)
-    if var_ratio < 0.77 {
-        return "ew-resize".to_string();
-    }
-
-    // Roughly isotropic XOR region - could be move or crosshair
-    let coverage = xor_shape.count as f32 / (cursor_width * cursor_height) as f32;
-    if coverage > 0.05 {
-        "move".to_string()
-    } else {
-        "crosshair".to_string()
+    // Second pass: set outline pixels to white with distance-based alpha
+    for (idx, alpha) in outline_pixels {
+        rgba[idx] = 255;     // R
+        rgba[idx + 1] = 255; // G
+        rgba[idx + 2] = 255; // B
+        rgba[idx + 3] = alpha;
     }
 }
 

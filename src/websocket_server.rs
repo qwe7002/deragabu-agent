@@ -15,7 +15,7 @@ use crate::cursor::{
     cursor_message::Payload, CursorMessage, CursorSignal, MessageType,
 };
 use crate::cursor_capture::{
-    CursorEvent, create_hide_message, create_native_cursor_message, create_scaled_cursor_message,
+    CursorEvent, create_hide_message, create_scaled_cursor_message,
     get_last_cursor_id, get_cached_cursor,
 };
 
@@ -138,19 +138,6 @@ async fn handle_client(
                             break;
                         }
                     }
-                    CursorEvent::CursorNative(ref css_name) => {
-                        let native_msg = create_native_cursor_message(css_name);
-                        let mut buf = Vec::new();
-                        if let Err(e) = native_msg.encode(&mut buf) {
-                            error!("Protobuf encoding failed: {}", e);
-                            continue;
-                        }
-                        debug!("Sending native cursor to {} : {}", peer_addr, css_name);
-                        if let Err(e) = write.send(WsMessage::Binary(buf.into())).await {
-                            error!("Send failed ({}): {}", peer_addr, e);
-                            break;
-                        }
-                    }
                 }
             }
 
@@ -188,17 +175,7 @@ async fn handle_client(
 
                                 // Send current cursor at new scale immediately
                                 if let Some(current_id) = get_last_cursor_id() {
-                                    if current_id.starts_with("native:") {
-                                        // Native cursor - resend native signal (no scaling needed)
-                                        let css_name = &current_id["native:".len()..];
-                                        let native_msg = create_native_cursor_message(css_name);
-                                        let mut buf = Vec::new();
-                                        if let Err(e) = native_msg.encode(&mut buf) {
-                                            error!("Protobuf encoding failed: {}", e);
-                                        } else {
-                                            let _ = write.send(WsMessage::Binary(buf.into())).await;
-                                        }
-                                    } else if let Some(data_msg) = create_scaled_cursor_message(&current_id, client_dpr) {
+                                    if let Some(data_msg) = create_scaled_cursor_message(&current_id, client_dpr) {
                                         let mut buf = Vec::new();
                                         if let Err(e) = data_msg.encode(&mut buf) {
                                             error!("Protobuf encoding failed: {}", e);

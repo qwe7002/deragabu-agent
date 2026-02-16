@@ -9,7 +9,6 @@ message CursorMessage {
     oneof payload {
         CursorData cursor_data = 2;      // Cursor image data (sent once per cursor, cached by client)
         CursorSignal cursor_signal = 3;  // Cursor switch signal (sent on change)
-        NativeCursor native_cursor = 5;  // Use client's native/local cursor rendering
     }
 
     uint64 timestamp = 4;
@@ -33,20 +32,11 @@ message CursorSignal {
     string cursor_id = 1;           // Reference to cached cursor image
 }
 
-// Native cursor signal - tells client to use local/native cursor rendering
-// Used for XOR/inversion cursors that cannot be accurately captured as images
-message NativeCursor {
-    string cursor_name = 1;         // CSS cursor value: "default", "text", "crosshair", "move", etc.
-}
-
 enum MessageType {
     MESSAGE_TYPE_UNSPECIFIED = 0;
     MESSAGE_TYPE_CURSOR_DATA = 1;    // New cursor image (client should cache)
     MESSAGE_TYPE_CURSOR_SIGNAL = 2;  // Switch to cached cursor
     MESSAGE_TYPE_CURSOR_HIDE = 3;    // Cursor hidden
     MESSAGE_TYPE_HEARTBEAT = 4;      // Heartbeat
-    MESSAGE_TYPE_CURSOR_NATIVE = 5;  // Use client's native cursor
 }
-
-
 
