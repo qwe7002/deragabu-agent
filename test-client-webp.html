@@ -338,6 +338,7 @@ message CursorMessage {
     oneof payload {
         CursorData cursor_data = 2;
         CursorSignal cursor_signal = 3;
+        NativeCursor native_cursor = 5;
     }
     uint64 timestamp = 4;
 }
@@ -358,12 +359,17 @@ message CursorSignal {
     string cursor_id = 1;
 }
 
+message NativeCursor {
+    string cursor_name = 1;
+}
+
 enum MessageType {
     MESSAGE_TYPE_UNSPECIFIED = 0;
     MESSAGE_TYPE_CURSOR_DATA = 1;
     MESSAGE_TYPE_CURSOR_SIGNAL = 2;
     MESSAGE_TYPE_CURSOR_HIDE = 3;
     MESSAGE_TYPE_HEARTBEAT = 4;
+    MESSAGE_TYPE_CURSOR_NATIVE = 5;
 }`;
 
         // ======== Init ========
@@ -423,6 +429,7 @@ enum MessageType {
                     case 2: handleCursorSignal(msg); break;  // CURSOR_SIGNAL
                     case 3: handleCursorHide(); break;       // CURSOR_HIDE
                     case 4: break;                           // HEARTBEAT
+                    case 5: handleNativeCursor(msg); break;  // CURSOR_NATIVE
                 }
 
                 updateStatsUI();
@@ -487,6 +494,39 @@ enum MessageType {
             const display = document.getElementById('cursorDisplay');
             display.innerHTML = '<div class="empty-state">光标已隐藏</div>';
             document.getElementById('cursorInfo').style.display = 'none';
+        }
+
+        function handleNativeCursor(msg) {
+            const native = msg.native_cursor;
+            if (!native || !native.cursor_name) return;
+
+            stats.signal++;
+            currentCursorId = 'native:' + native.cursor_name;
+            const display = document.getElementById('cursorDisplay');
+            display.innerHTML = `
+                <div class="empty-state" style="cursor: ${native.cursor_name};">
+                    <div style="font-size: 48px;">🖱️</div>
+                    <div style="font-size: 16px; font-weight: 600;">本地光标: ${native.cursor_name}</div>
+                    <div style="font-size: 13px; color: #666; margin-top: 6px;">（XOR 光标 - 使用浏览器原生渲染）</div>
+                    <div style="margin-top: 10px; padding: 14px; cursor: ${native.cursor_name}; background: #f0f0f0; border-radius: 8px; min-width: 180px;">
+                        将鼠标移到此处查看光标效果
+                    </div>
+                </div>`;
+
+            const info = document.getElementById('cursorInfo');
+            info.style.display = 'block';
+            document.getElementById('cursorInfoGrid').innerHTML = `
+                <div>
+                    <div class="info-label">光标类型</div>
+                    <div class="info-value"><span class="badge badge-info">本地/原生</span></div>
+                </div>
+                <div>
+                    <div class="info-label">CSS cursor</div>
+                    <div class="info-value">${native.cursor_name}</div>
+                </div>
+            `;
+
+            log(`🖱️ 本地光标: ${native.cursor_name} (XOR)`, 'info');
         }
 
         // ======== Display ========
