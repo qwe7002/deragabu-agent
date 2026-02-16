@@ -4,12 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Image processing
-image = { version = "0.25", default-features = false, features = ["png", "webp"] }
-webp = "0.3"
-
-# Hashing for cursor cache
-blake3 = "1.5"
 
 # Protobuf
 prost = "0.13"
@@ -33,6 +27,12 @@ tracing-subscriber = "0.3"
 
 # Error handling
 anyhow = "1"
+
+# Image encoding (WebP)
+webp = "0.3"
+
+# Hashing for cursor ID
+blake3 = "1"
 
 [build-dependencies]
 prost-build = "0.13"

@@ -17,8 +17,8 @@ async fn main() -> Result<()> {
 
     info!("Deragabu Agent starting...");
 
-    // Create channel for passing cursor messages
-    let (tx, rx) = mpsc::channel::<cursor::CursorMessage>(32);
+    // Create channel for passing cursor events (lightweight, per-client scaling done in WS handler)
+    let (tx, rx) = mpsc::channel::<cursor_capture::CursorEvent>(32);
 
     // WebSocket server bind address
     let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:9000".to_string());

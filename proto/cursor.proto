@@ -2,41 +2,42 @@ syntax = "proto3";
 
 package cursor;
 
-// Cursor message
+// Main cursor message
 message CursorMessage {
-    // Message type
     MessageType type = 1;
-    // Cursor image data (PNG or WebP) - empty if using cached cursor
-    bytes image_data = 2;
-    // Cursor hotspot X coordinate
-    int32 hotspot_x = 3;
-    // Cursor hotspot Y coordinate
-    int32 hotspot_y = 4;
-    // Image width
-    int32 width = 5;
-    // Image height
-    int32 height = 6;
-    // Timestamp (milliseconds)
-    uint64 timestamp = 7;
-    // Image format (0=PNG, 1=WebP, 2=WebP_Animated)
-    ImageFormat image_format = 8;
-    // Cursor cache ID (hash of image data) - if image_data is empty, use this to reference cached cursor
-    string cursor_id = 9;
-    // Whether this is a full update (true) or cache reference (false)
-    bool is_full_update = 10;
+
+    oneof payload {
+        CursorData cursor_data = 2;      // Cursor image data (sent once per cursor, cached by client)
+        CursorSignal cursor_signal = 3;  // Cursor switch signal (sent on change)
+    }
+
+    uint64 timestamp = 4;
+}
+
+// Cursor image data - WebP encoded, sent once per unique cursor
+message CursorData {
+    string cursor_id = 1;           // Unique ID (hash of cursor image)
+    bytes image_data = 2;           // WebP encoded cursor image
+    int32 width = 3;                // Original image width in pixels
+    int32 height = 4;               // Original image height in pixels
+    int32 hotspot_x = 5;            // Hotspot X in pixels (relative to image)
+    int32 hotspot_y = 6;            // Hotspot Y in pixels (relative to image)
+    float dpi_scale = 7;            // Server-side DPI scale factor (e.g. 1.0, 1.25, 1.5, 2.0)
+    bool is_animated = 8;           // True if this is a frame of an animated cursor
+    uint32 frame_delay_ms = 9;      // Estimated delay between animation frames (ms)
+}
+
+// Cursor switch signal - lightweight, tells client which cached cursor to show
+message CursorSignal {
+    string cursor_id = 1;           // Reference to cached cursor image
 }
 
 enum MessageType {
     MESSAGE_TYPE_UNSPECIFIED = 0;
-    MESSAGE_TYPE_CURSOR_UPDATE = 1;
-    MESSAGE_TYPE_CURSOR_HIDE = 2;
-    MESSAGE_TYPE_HEARTBEAT = 3;
-}
-
-enum ImageFormat {
-    IMAGE_FORMAT_PNG = 0;
-    IMAGE_FORMAT_WEBP = 1;
-    IMAGE_FORMAT_WEBP_ANIMATED = 2;
+    MESSAGE_TYPE_CURSOR_DATA = 1;    // New cursor image (client should cache)
+    MESSAGE_TYPE_CURSOR_SIGNAL = 2;  // Switch to cached cursor
+    MESSAGE_TYPE_CURSOR_HIDE = 3;    // Cursor hidden
+    MESSAGE_TYPE_HEARTBEAT = 4;      // Heartbeat
 }
 
 

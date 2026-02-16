@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deragabu Agent - 信号同步测试</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .connection-panel {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+
+        .status-bar {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+            flex: 1;
+        }
+
+        .status-indicator.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 2px solid #c3e6cb;
+        }
+
+        .status-indicator.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 2px solid #f5c6cb;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .status-indicator.connected .status-dot {
+            background: #28a745;
+            animation: pulse 2s infinite;
+        }
+
+        .status-indicator.disconnected .status-dot {
+            background: #dc3545;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            min-width: 250px;
+            padding: 10px 15px;
+            border: 2px solid #dee2e6;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #f85032 0%, #e73827 100%);
+            color: white;
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: white;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
+            padding: 15px;
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: #6c757d;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .cursor-preview {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+        }
+
+        .cursor-preview h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 20px;
+        }
+
+        .cursor-display-area {
+            background: white;
+            border: 3px solid #dee2e6;
+            border-radius: 8px;
+            min-height: 200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+            font-size: 48px;
+            position: relative;
+        }
+
+        .cursor-info {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 20px;
+            border-left: 4px solid #667eea;
+        }
+
+        .cursor-info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+        }
+
+        .info-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: #6c757d;
+            text-transform: uppercase;
+        }
+
+        .info-value {
+            font-size: 14px;
+            font-weight: 600;
+            color: #333;
+            margin-top: 5px;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .badge-success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .badge-info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .badge-warning {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .log-panel {
+            background: #1e1e1e;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .log-header {
+            background: #2d2d2d;
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .log-header h2 {
+            color: #d4d4d4;
+            font-size: 16px;
+        }
+
+        .log-btn {
+            padding: 6px 12px;
+            font-size: 12px;
+            background: #3d3d3d;
+            color: #d4d4d4;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .log-content {
+            padding: 15px 20px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'Consolas', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .log-entry {
+            margin: 3px 0;
+            color: #d4d4d4;
+        }
+
+        .log-entry .timestamp {
+            color: #858585;
+        }
+
+        .log-entry.info { color: #4ec9b0; }
+        .log-entry.warn { color: #dcdcaa; }
+        .log-entry.error { color: #f48771; }
+        .log-entry.success { color: #4ec9b0; }
+
+        /* 光标样式示例 */
+        .cursor-default { cursor: default; }
+        .cursor-pointer { cursor: pointer; }
+        .cursor-text { cursor: text; }
+        .cursor-wait { cursor: wait; }
+        .cursor-help { cursor: help; }
+        .cursor-move { cursor: move; }
+        .cursor-crosshair { cursor: crosshair; }
+        .cursor-not-allowed { cursor: not-allowed; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🖱️ Deragabu Agent - 信号同步测试</h1>
+            <p>新协议 - 零带宽光标同步</p>
+        </div>
+
+        <div class="content">
+            <div class="connection-panel">
+                <div class="status-bar">
+                    <div id="statusIndicator" class="status-indicator disconnected">
+                        <div class="status-dot"></div>
+                        <span id="statusText">未连接</span>
+                    </div>
+                </div>
+
+                <div class="controls">
+                    <input type="text" id="wsUrl" value="ws://127.0.0.1:9000" placeholder="ws://host:port">
+                    <button class="btn-primary" onclick="connect()">连接</button>
+                    <button class="btn-danger" onclick="disconnect()" id="disconnectBtn" disabled>断开</button>
+                    <button class="btn-secondary" onclick="clearLog()">清除日志</button>
+                </div>
+            </div>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">消息数</div>
+                    <div class="stat-value" id="messageCount">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">数据消息</div>
+                    <div class="stat-value" id="dataMessageCount">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">信号消息</div>
+                    <div class="stat-value" id="signalMessageCount">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">已知光标</div>
+                    <div class="stat-value" id="knownCursors">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">数据量</div>
+                    <div class="stat-value" id="totalBytes">0 B</div>
+                </div>
+            </div>
+
+            <div class="cursor-preview">
+                <h2>📍 当前光标</h2>
+                <div class="cursor-display-area cursor-default" id="cursorDisplay">
+                    👆 移动鼠标到这里查看光标变化
+                </div>
+                <div class="cursor-info" id="cursorInfo" style="display: none;">
+                    <div class="cursor-info-grid" id="cursorInfoGrid"></div>
+                </div>
+            </div>
+
+            <div class="log-panel">
+                <div class="log-header">
+                    <h2>📋 日志</h2>
+                    <button class="log-btn" onclick="clearLog()">清除</button>
+                </div>
+                <div class="log-content" id="log"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/protobufjs@7/dist/protobuf.min.js"></script>
+    <script>
+        let ws = null;
+        let messageCount = 0;
+        let dataMessageCount = 0;
+        let signalMessageCount = 0;
+        let totalBytes = 0;
+
+        let CursorMessage = null;
+        let MessageType = null;
+        let CursorFileType = null;
+        let CursorState = null;
+
+        const cursorMap = new Map(); // cursor_id -> cursor info
+        let currentCursorId = null;
+
+        // 新协议的 Protobuf 定义
+        const protoDefinition = `
+syntax = "proto3";
+package cursor;
+
+message CursorMessage {
+    MessageType type = 1;
+    oneof payload {
+        CursorData cursor_data = 2;
+        CursorSignal cursor_signal = 3;
+    }
+    uint64 timestamp = 4;
+}
+
+message CursorData {
+    string cursor_id = 1;
+    bytes cursor_file = 2;
+    CursorFileType file_type = 3;
+    int32 default_hotspot_x = 4;
+    int32 default_hotspot_y = 5;
+}
+
+message CursorSignal {
+    string cursor_id = 1;
+    CursorState state = 2;
+    int32 frame_index = 3;
+}
+
+enum MessageType {
+    MESSAGE_TYPE_UNSPECIFIED = 0;
+    MESSAGE_TYPE_CURSOR_DATA = 1;
+    MESSAGE_TYPE_CURSOR_SIGNAL = 2;
+    MESSAGE_TYPE_CURSOR_HIDE = 3;
+    MESSAGE_TYPE_HEARTBEAT = 4;
+}
+
+enum CursorFileType {
+    CURSOR_FILE_TYPE_UNKNOWN = 0;
+    CURSOR_FILE_TYPE_CUR = 1;
+    CURSOR_FILE_TYPE_ANI = 2;
+    CURSOR_FILE_TYPE_ICO = 3;
+}
+
+enum CursorState {
+    CURSOR_STATE_NORMAL = 0;
+    CURSOR_STATE_HIDDEN = 1;
+}
+        `;
+
+        // 光标 ID 到 CSS cursor 值的映射
+        const cursorStyles = [
+            'default', 'pointer', 'text', 'wait', 'help',
+            'move', 'crosshair', 'not-allowed', 'grab',
+            'zoom-in', 'zoom-out', 'copy', 'alias'
+        ];
+        let nextCursorStyleIndex = 0;
+
+        window.addEventListener('load', () => {
+            initProtobuf();
+            log('✅ 测试工具已就绪 (新协议)', 'success');
+        });
+
+        function initProtobuf() {
+            try {
+                const root = protobuf.parse(protoDefinition, { keepCase: true }).root;
+                CursorMessage = root.lookupType('cursor.CursorMessage');
+                MessageType = root.lookupEnum('cursor.MessageType').values;
+                CursorFileType = root.lookupEnum('cursor.CursorFileType').values;
+                CursorState = root.lookupEnum('cursor.CursorState').values;
+                log('✅ Protobuf 已加载 (信号同步协议)', 'info');
+            } catch (e) {
+                log('❌ Protobuf 加载失败: ' + e.message, 'error');
+            }
+        }
+
+        function connect() {
+            if (!CursorMessage) {
+                log('❌ Protobuf 未初始化', 'error');
+                return;
+            }
+
+            const url = document.getElementById('wsUrl').value.trim();
+            log(`🔌 连接中: ${url}...`, 'info');
+            updateStatus('connecting');
+
+            try {
+                ws = new WebSocket(url);
+                ws.binaryType = 'arraybuffer';
+
+                ws.onopen = () => {
+                    log('✅ 已连接', 'success');
+                    updateStatus('connected');
+                    document.getElementById('disconnectBtn').disabled = false;
+                };
+
+                ws.onclose = () => {
+                    log('⚠️ 连接已关闭', 'warn');
+                    updateStatus('disconnected');
+                    document.getElementById('disconnectBtn').disabled = true;
+                };
+
+                ws.onerror = () => {
+                    log('❌ 连接错误', 'error');
+                };
+
+                ws.onmessage = handleMessage;
+            } catch (e) {
+                log('❌ 连接失败: ' + e.message, 'error');
+                updateStatus('disconnected');
+            }
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function handleMessage(event) {
+            try {
+                const data = new Uint8Array(event.data);
+                const message = CursorMessage.decode(data);
+
+                messageCount++;
+                totalBytes += data.length;
+
+                updateStats();
+                handleCursorMessage(message);
+            } catch (e) {
+                log('❌ 解析失败: ' + e.message, 'error');
+                console.error('Parse error:', e);
+            }
+        }
+
+        function handleCursorMessage(message) {
+            const typeNames = {
+                0: 'UNSPECIFIED',
+                1: 'CURSOR_DATA',
+                2: 'CURSOR_SIGNAL',
+                3: 'CURSOR_HIDE',
+                4: 'HEARTBEAT'
+            };
+            const typeName = typeNames[message.type] || 'UNKNOWN';
+
+            if (message.type === 1) { // CURSOR_DATA
+                dataMessageCount++;
+                const data = message.payload.cursor_data || message.cursor_data;
+
+                if (data) {
+                    // 存储光标信息
+                    const cursorStyle = cursorStyles[nextCursorStyleIndex % cursorStyles.length];
+                    nextCursorStyleIndex++;
+
+                    cursorMap.set(data.cursor_id, {
+                        id: data.cursor_id,
+                        style: cursorStyle,
+                        hotspot_x: data.default_hotspot_x,
+                        hotspot_y: data.default_hotspot_y,
+                        file_type: data.file_type
+                    });
+
+                    log(`📦 新光标: ${data.cursor_id.substring(0, 12)}... → ${cursorStyle}`, 'info');
+
+                    // 自动切换到新光标
+                    applyCursor(data.cursor_id);
+                } else {
+                    log('⚠️ CURSOR_DATA 消息缺少 cursor_data', 'warn');
+                }
+            } else if (message.type === 2) { // CURSOR_SIGNAL
+                signalMessageCount++;
+                const signal = message.payload.cursor_signal || message.cursor_signal;
+
+                if (signal) {
+                    log(`🎯 信号: ${signal.cursor_id.substring(0, 12)}... (state=${signal.state})`, 'info');
+                    applyCursor(signal.cursor_id);
+                } else {
+                    log('⚠️ CURSOR_SIGNAL 消息缺少 cursor_signal', 'warn');
+                }
+            } else if (message.type === 3) { // CURSOR_HIDE
+                log('👻 光标隐藏', 'warn');
+                hideCursor();
+            } else if (message.type === 4) { // HEARTBEAT
+                log('💓 心跳', 'info');
+            }
+        }
+
+        function applyCursor(cursorId) {
+            const cursorInfo = cursorMap.get(cursorId);
+            if (!cursorInfo) {
+                log(`⚠️ 未知光标: ${cursorId}`, 'warn');
+                return;
+            }
+
+            currentCursorId = cursorId;
+            const display = document.getElementById('cursorDisplay');
+            display.className = 'cursor-display-area cursor-' + cursorInfo.style;
+            display.textContent = `当前光标: ${cursorInfo.style}`;
+
+            // 显示光标信息
+            const infoPanel = document.getElementById('cursorInfo');
+            const infoGrid = document.getElementById('cursorInfoGrid');
+            infoPanel.style.display = 'block';
+
+            const fileTypes = ['未知', 'CUR', 'ANI', 'ICO'];
+            const fileTypeName = fileTypes[cursorInfo.file_type] || '未知';
+
+            infoGrid.innerHTML = `
+                <div>
+                    <div class="info-label">光标 ID</div>
+                    <div class="info-value">${cursorId.substring(0, 16)}...</div>
+                </div>
+                <div>
+                    <div class="info-label">CSS 样式</div>
+                    <div class="info-value"><span class="badge badge-info">${cursorInfo.style}</span></div>
+                </div>
+                <div>
+                    <div class="info-label">热点</div>
+                    <div class="info-value">(${cursorInfo.hotspot_x}, ${cursorInfo.hotspot_y})</div>
+                </div>
+                <div>
+                    <div class="info-label">类型</div>
+                    <div class="info-value">${fileTypeName}</div>
+                </div>
+            `;
+        }
+
+        function hideCursor() {
+            const display = document.getElementById('cursorDisplay');
+            display.className = 'cursor-display-area';
+            display.style.cursor = 'none';
+            display.textContent = '光标已隐藏';
+            document.getElementById('cursorInfo').style.display = 'none';
+        }
+
+        function updateStats() {
+            document.getElementById('messageCount').textContent = messageCount;
+            document.getElementById('dataMessageCount').textContent = dataMessageCount;
+            document.getElementById('signalMessageCount').textContent = signalMessageCount;
+            document.getElementById('knownCursors').textContent = cursorMap.size;
+
+            const bytes = totalBytes;
+            let displayBytes;
+            if (bytes < 1024) {
+                displayBytes = bytes + ' B';
+            } else if (bytes < 1024 * 1024) {
+                displayBytes = (bytes / 1024).toFixed(1) + ' KB';
+            } else {
+                displayBytes = (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+            }
+            document.getElementById('totalBytes').textContent = displayBytes;
+        }
+
+        function updateStatus(state) {
+            const indicator = document.getElementById('statusIndicator');
+            const text = document.getElementById('statusText');
+            indicator.className = 'status-indicator ' + state;
+            text.textContent = state === 'connected' ? '已连接' :
+                              state === 'connecting' ? '连接中...' : '未连接';
+        }
+
+        function log(message, type = 'info') {
+            const logEl = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = 'log-entry ' + type;
+            entry.innerHTML = `<span class="timestamp">[${timestamp}]</span> ${escapeHtml(message)}`;
+            logEl.appendChild(entry);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+            log('📝 日志已清除', 'info');
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
+
