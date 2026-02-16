@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>光標捕獲測試客戶端</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+
+        .status.connected {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.connecting {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeeba;
+        }
+
+        .cursor-display {
+            margin: 20px 0;
+            padding: 20px;
+            background-color: #f9f9f9;
+            border: 2px dashed #ccc;
+            border-radius: 4px;
+            text-align: center;
+            min-height: 100px;
+            position: relative;
+        }
+
+        .cursor-image {
+            max-width: 100%;
+            image-rendering: pixelated;
+            image-rendering: -moz-crisp-edges;
+            image-rendering: crisp-edges;
+        }
+
+        .cursor-info {
+            margin-top: 10px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            opacity: 0.9;
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+        }
+
+        .log {
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 4px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        .log-entry {
+            margin: 2px 0;
+        }
+
+        .log-entry.info { color: #4ec9b0; }
+        .log-entry.warn { color: #dcdcaa; }
+        .log-entry.error { color: #f48771; }
+
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+        }
+
+        button:hover {
+            background-color: #45a049;
+        }
+
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+
+        .controls {
+            margin: 20px 0;
+        }
+
+        input[type="text"] {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            width: 300px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖱️ Deragabu Agent 測試客戶端</h1>
+
+        <div id="status" class="status disconnected">⚫ 未連接</div>
+
+        <div class="controls">
+            <input type="text" id="wsUrl" value="ws://127.0.0.1:9000" placeholder="WebSocket URL">
+            <button id="connectBtn" onclick="connect()">連接</button>
+            <button id="disconnectBtn" onclick="disconnect()" disabled>斷開</button>
+            <button onclick="clearLog()">清除日誌</button>
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-label">收到消息</div>
+                <div class="stat-value" id="messageCount">0</div>
+            </div>
+            <div class="stat-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                <div class="stat-label">光標更新</div>
+                <div class="stat-value" id="cursorUpdateCount">0</div>
+            </div>
+            <div class="stat-card" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+                <div class="stat-label">數據大小</div>
+                <div class="stat-value" id="totalBytes">0 KB</div>
+            </div>
+            <div class="stat-card" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);">
+                <div class="stat-label">FPS</div>
+                <div class="stat-value" id="fps">0</div>
+            </div>
+        </div>
+
+        <h2>光標預覽</h2>
+        <div class="cursor-display" id="cursorDisplay">
+            <p>等待光標數據...</p>
+        </div>
+        <div class="cursor-info" id="cursorInfo"></div>
+
+        <h2>日誌</h2>
+        <div class="log" id="log"></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/protobufjs@7/dist/protobuf.min.js"></script>
+    <script>
+        let ws = null;
+        let messageCount = 0;
+        let cursorUpdateCount = 0;
+        let totalBytes = 0;
+        let lastUpdateTime = Date.now();
+        let fpsCounter = 0;
+        let CursorMessage = null;
+        let MessageType = null;
+
+        // 加載 Protobuf 定義
+        const protoDefinition = `
+syntax = "proto3";
+package cursor;
+
+message CursorMessage {
+    MessageType type = 1;
+    bytes image_data = 2;
+    int32 hotspot_x = 3;
+    int32 hotspot_y = 4;
+    int32 width = 5;
+    int32 height = 6;
+    uint64 timestamp = 7;
+}
+
+enum MessageType {
+    MESSAGE_TYPE_UNSPECIFIED = 0;
+    MESSAGE_TYPE_CURSOR_UPDATE = 1;
+    MESSAGE_TYPE_CURSOR_HIDE = 2;
+    MESSAGE_TYPE_HEARTBEAT = 3;
+}
+        `;
+
+        // 解析 Protobuf (同步操作)
+        try {
+            const root = protobuf.parse(protoDefinition, { keepCase: true }).root;
+            CursorMessage = root.lookupType('cursor.CursorMessage');
+            MessageType = root.lookupEnum('cursor.MessageType').values;
+            console.log('Protobuf 定義加載完成');
+        } catch (e) {
+            console.error('Protobuf 解析失敗:', e);
+        }
+
+        // FPS 計算器
+        setInterval(() => {
+            document.getElementById('fps').textContent = fpsCounter;
+            fpsCounter = 0;
+        }, 1000);
+
+        function connect() {
+            const url = document.getElementById('wsUrl').value;
+            log(`正在連接到 ${url}...`, 'info');
+            updateStatus('connecting', '🟡 連接中...');
+
+            ws = new WebSocket(url);
+            ws.binaryType = 'arraybuffer';
+
+            ws.onopen = () => {
+                log('WebSocket 連接成功', 'info');
+                updateStatus('connected', '🟢 已連接');
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('disconnectBtn').disabled = false;
+            };
+
+            ws.onclose = () => {
+                log('WebSocket 連接關閉', 'warn');
+                updateStatus('disconnected', '⚫ 未連接');
+                document.getElementById('connectBtn').disabled = false;
+                document.getElementById('disconnectBtn').disabled = true;
+            };
+
+            ws.onerror = (error) => {
+                log('WebSocket 錯誤: ' + error, 'error');
+            };
+
+            ws.onmessage = (event) => {
+                if (!CursorMessage) {
+                    log('Protobuf 尚未加載', 'warn');
+                    return;
+                }
+
+                try {
+                    const data = new Uint8Array(event.data);
+                    const message = CursorMessage.decode(data);
+
+                    messageCount++;
+                    totalBytes += data.length;
+                    fpsCounter++;
+
+                    updateStats();
+                    handleCursorMessage(message);
+                } catch (e) {
+                    log('解析消息失敗: ' + e.message, 'error');
+                }
+            };
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function handleCursorMessage(message) {
+            const typeNames = ['未指定', '光標更新', '光標隱藏', '心跳'];
+            const typeName = typeNames[message.type] || '未知';
+
+            if (message.type === 1) { // CURSOR_UPDATE
+                cursorUpdateCount++;
+
+                // 顯示光標圖像
+                const blob = new Blob([message.image_data], { type: 'image/png' });
+                const url = URL.createObjectURL(blob);
+
+                const display = document.getElementById('cursorDisplay');
+                display.innerHTML = `<img src="${url}" class="cursor-image" style="zoom: 2;">`;
+
+                const info = document.getElementById('cursorInfo');
+                info.innerHTML = `
+                    尺寸: ${message.width}x${message.height} |
+                    熱點: (${message.hotspot_x}, ${message.hotspot_y}) |
+                    大小: ${(message.image_data.length / 1024).toFixed(2)} KB |
+                    時間: ${new Date(Number(message.timestamp)).toLocaleTimeString()}
+                `;
+
+                log(`收到光標: ${message.width}x${message.height}, ${(message.image_data.length / 1024).toFixed(2)} KB`, 'info');
+            } else if (message.type === 2) { // CURSOR_HIDE
+                document.getElementById('cursorDisplay').innerHTML = '<p>光標已隱藏</p>';
+                log('光標已隱藏', 'warn');
+            } else if (message.type === 3) { // HEARTBEAT
+                log('收到心跳', 'info');
+            }
+        }
+
+        function updateStats() {
+            document.getElementById('messageCount').textContent = messageCount;
+            document.getElementById('cursorUpdateCount').textContent = cursorUpdateCount;
+            document.getElementById('totalBytes').textContent = (totalBytes / 1024).toFixed(2) + ' KB';
+        }
+
+        function updateStatus(state, text) {
+            const statusEl = document.getElementById('status');
+            statusEl.className = 'status ' + state;
+            statusEl.textContent = text;
+        }
+
+        function log(message, type = 'info') {
+            const logEl = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = 'log-entry ' + type;
+            entry.textContent = `[${timestamp}] ${message}`;
+            logEl.appendChild(entry);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+
+        // 自動連接
+        window.addEventListener('load', () => {
+            log('頁面已加載，準備就緒', 'info');
+        });
+    </script>
+</body>
+</html>
+

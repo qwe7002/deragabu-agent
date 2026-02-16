@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>光標捕獲測試 - 簡化版</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+
+        h1 {
+            color: #667eea;
+            margin: 0 0 20px 0;
+            font-size: 28px;
+        }
+
+        .status {
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 8px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status.connected {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+        }
+
+        .status.disconnected {
+            background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
+            color: white;
+        }
+
+        .status.connecting {
+            background: linear-gradient(135deg, #f2994a 0%, #f2c94c 100%);
+            color: white;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+
+        input {
+            flex: 1;
+            min-width: 200px;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        button.primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        button.primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        button.secondary {
+            background: #e0e0e0;
+            color: #333;
+        }
+
+        button.secondary:hover {
+            background: #d0d0d0;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+
+        .stat {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            opacity: 0.9;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+
+        .stat-value {
+            font-size: 32px;
+            font-weight: bold;
+        }
+
+        .cursor-display {
+            margin: 20px 0;
+            padding: 40px;
+            background:
+                repeating-linear-gradient(45deg, #f9f9f9 0, #f9f9f9 10px, #ffffff 10px, #ffffff 20px);
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            text-align: center;
+            min-height: 150px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+        }
+
+        .cursor-image {
+            image-rendering: pixelated;
+            image-rendering: -moz-crisp-edges;
+            image-rendering: crisp-edges;
+        }
+
+        .cursor-info {
+            margin-top: 15px;
+            padding: 10px 20px;
+            background: white;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            color: #666;
+            border: 1px solid #e0e0e0;
+        }
+
+        .log-container {
+            margin-top: 20px;
+        }
+
+        .log {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 8px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        .log-entry {
+            margin: 3px 0;
+            padding: 2px 0;
+        }
+
+        .log-entry.info { color: #4ec9b0; }
+        .log-entry.warn { color: #dcdcaa; }
+        .log-entry.error { color: #f48771; }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 3px solid rgba(255,255,255,0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖱️ Deragabu Agent 測試客戶端</h1>
+
+        <div id="status" class="status disconnected">⚫ 未連接</div>
+
+        <div class="controls">
+            <input type="text" id="wsUrl" value="ws://127.0.0.1:9000" placeholder="WebSocket URL">
+            <button id="connectBtn" class="primary" onclick="connect()">連接</button>
+            <button id="disconnectBtn" class="secondary" onclick="disconnect()" disabled>斷開</button>
+            <button class="secondary" onclick="clearLog()">清除日誌</button>
+        </div>
+
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-label">收到消息</div>
+                <div class="stat-value" id="messageCount">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">光標更新</div>
+                <div class="stat-value" id="cursorUpdateCount">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">數據大小</div>
+                <div class="stat-value" id="totalBytes">0 KB</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">FPS</div>
+                <div class="stat-value" id="fps">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">緩存命中率</div>
+                <div class="stat-value" id="cacheHitRate">0%</div>
+            </div>
+        </div>
+
+        <h2>光標預覽</h2>
+        <div class="cursor-display" id="cursorDisplay">
+            <p style="color: #999;">等待光標數據...</p>
+        </div>
+        <div class="cursor-info" id="cursorInfo"></div>
+
+        <div class="log-container">
+            <h2>日誌</h2>
+            <div class="log" id="log"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/protobufjs@7/dist/protobuf.min.js"></script>
+    <script>
+        let ws = null;
+        let messageCount = 0;
+        let cursorUpdateCount = 0;
+        let totalBytes = 0;
+        let fpsCounter = 0;
+        let CursorMessage = null;
+        let MessageType = null;
+
+        // 緩存相關
+        const cursorCache = new Map();
+        let cacheHits = 0;
+        let cacheMisses = 0;
+
+        // Protobuf 定義
+        const protoDefinition = `
+syntax = "proto3";
+package cursor;
+
+message CursorMessage {
+    MessageType type = 1;
+    bytes image_data = 2;
+    int32 hotspot_x = 3;
+    int32 hotspot_y = 4;
+    int32 width = 5;
+    int32 height = 6;
+    uint64 timestamp = 7;
+    ImageFormat image_format = 8;
+    string cursor_id = 9;
+    bool is_full_update = 10;
+}
+
+enum MessageType {
+    MESSAGE_TYPE_UNSPECIFIED = 0;
+    MESSAGE_TYPE_CURSOR_UPDATE = 1;
+    MESSAGE_TYPE_CURSOR_HIDE = 2;
+    MESSAGE_TYPE_HEARTBEAT = 3;
+}
+
+enum ImageFormat {
+    IMAGE_FORMAT_PNG = 0;
+    IMAGE_FORMAT_WEBP = 1;
+    IMAGE_FORMAT_WEBP_ANIMATED = 2;
+}
+        `;
+
+        // 初始化 Protobuf
+        function initProtobuf() {
+            try {
+                const root = protobuf.parse(protoDefinition, { keepCase: true }).root;
+                CursorMessage = root.lookupType('cursor.CursorMessage');
+                MessageType = root.lookupEnum('cursor.MessageType').values;
+                log('✅ Protobuf 定義加載完成', 'info');
+                return true;
+            } catch (e) {
+                log('❌ Protobuf 解析失敗: ' + e.message, 'error');
+                return false;
+            }
+        }
+
+        // FPS 計算器
+        setInterval(() => {
+            document.getElementById('fps').textContent = fpsCounter;
+            fpsCounter = 0;
+        }, 1000);
+
+        function connect() {
+            // 確保 Protobuf 已初始化
+            if (!CursorMessage && !initProtobuf()) {
+                alert('Protobuf 初始化失敗！請刷新頁面重試。');
+                return;
+            }
+
+            const url = document.getElementById('wsUrl').value;
+            log(`🔌 正在連接到 ${url}...`, 'info');
+            updateStatus('connecting', '🟡 連接中...', true);
+
+            try {
+                ws = new WebSocket(url);
+                ws.binaryType = 'arraybuffer';
+
+                ws.onopen = () => {
+                    log('✅ WebSocket 連接成功', 'info');
+                    updateStatus('connected', '🟢 已連接');
+                    document.getElementById('connectBtn').disabled = true;
+                    document.getElementById('disconnectBtn').disabled = false;
+                };
+
+                ws.onclose = () => {
+                    log('⚠️ WebSocket 連接關閉', 'warn');
+                    updateStatus('disconnected', '⚫ 未連接');
+                    document.getElementById('connectBtn').disabled = false;
+                    document.getElementById('disconnectBtn').disabled = true;
+                };
+
+                ws.onerror = (error) => {
+                    log('❌ WebSocket 錯誤', 'error');
+                    console.error('WebSocket error:', error);
+                };
+
+                ws.onmessage = (event) => {
+                    if (!CursorMessage) {
+                        log('⚠️ Protobuf 尚未加載', 'warn');
+                        return;
+                    }
+
+                    try {
+                        const data = new Uint8Array(event.data);
+                        const message = CursorMessage.decode(data);
+
+                        messageCount++;
+                        totalBytes += data.length;
+                        fpsCounter++;
+
+                        updateStats();
+                        handleCursorMessage(message);
+                    } catch (e) {
+                        log('❌ 解析消息失敗: ' + e.message, 'error');
+                        console.error('Parse error:', e);
+                    }
+                };
+            } catch (e) {
+                log('❌ 連接失敗: ' + e.message, 'error');
+                updateStatus('disconnected', '⚫ 未連接');
+            }
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+                log('🔌 已斷開連接', 'info');
+            }
+        }
+
+        function handleCursorMessage(message) {
+            const typeNames = {
+                0: '未指定',
+                1: '光標更新',
+                2: '光標隱藏',
+                3: '心跳'
+            };
+            const typeName = typeNames[message.type] || '未知';
+
+            const formatNames = {
+                0: 'PNG',
+                1: 'WebP',
+                2: 'WebP (動畫)'
+            };
+            const formatName = formatNames[message.image_format] || '未知';
+
+            if (message.type === 1) { // CURSOR_UPDATE
+                cursorUpdateCount++;
+
+                const formatNames = {
+                    0: 'PNG',
+                    1: 'WebP',
+                    2: 'WebP (動畫)'
+                };
+                const formatName = formatNames[message.image_format] || '未知';
+
+                let imageUrl;
+                let dataSize = 0;
+                let cacheStatus = '';
+
+                if (message.is_full_update) {
+                    // 完整更新 - 緩存新圖像
+                    cacheMisses++;
+                    cacheStatus = '完整';
+                    dataSize = message.image_data.length;
+
+                    const mimeType = message.image_format === 1 || message.image_format === 2
+                        ? 'image/webp'
+                        : 'image/png';
+
+                    const blob = new Blob([message.image_data], { type: mimeType });
+                    imageUrl = URL.createObjectURL(blob);
+
+                    // 緩存圖像
+                    cursorCache.set(message.cursor_id, {
+                        url: imageUrl,
+                        hotspot_x: message.hotspot_x,
+                        hotspot_y: message.hotspot_y,
+                        width: message.width,
+                        height: message.height,
+                        format: formatName
+                    });
+
+                    // 限制緩存大小
+                    if (cursorCache.size > 50) {
+                        const firstKey = cursorCache.keys().next().value;
+                        const cached = cursorCache.get(firstKey);
+                        if (cached && cached.url) {
+                            URL.revokeObjectURL(cached.url);
+                        }
+                        cursorCache.delete(firstKey);
+                    }
+                } else {
+                    // 緩存引用
+                    cacheHits++;
+                    cacheStatus = '緩存';
+
+                    const cached = cursorCache.get(message.cursor_id);
+                    if (cached) {
+                        imageUrl = cached.url;
+                        dataSize = 0; // 沒有傳輸圖像數據
+                    } else {
+                        log('⚠️ 緩存未命中: ' + message.cursor_id, 'warn');
+                        return;
+                    }
+                }
+
+                // 顯示光標圖像
+                const display = document.getElementById('cursorDisplay');
+                display.innerHTML = `<img src="${imageUrl}" class="cursor-image" style="zoom: 3;">`;
+
+                const info = document.getElementById('cursorInfo');
+                info.innerHTML = `
+                    尺寸: ${message.width}x${message.height} |
+                    熱點: (${message.hotspot_x}, ${message.hotspot_y}) |
+                    格式: ${formatName} | ${cacheStatus} |
+                    大小: ${dataSize > 0 ? (dataSize / 1024).toFixed(2) + ' KB' : '緩存'} |
+                    時間: ${new Date(Number(message.timestamp)).toLocaleTimeString()}
+                `;
+
+                log(`🖱️ 光標更新: ${message.width}x${message.height} (${formatName}, ${cacheStatus}, ${dataSize > 0 ? (dataSize / 1024).toFixed(2) + ' KB' : '0 KB'})`, 'info');
+            } else if (message.type === 2) { // CURSOR_HIDE
+                document.getElementById('cursorDisplay').innerHTML = '<p style="color: #999;">光標已隱藏</p>';
+                document.getElementById('cursorInfo').innerHTML = '';
+                log('👻 光標已隱藏', 'warn');
+            } else if (message.type === 3) { // HEARTBEAT
+                log('💓 收到心跳', 'info');
+            }
+        }
+
+        function updateStats() {
+            document.getElementById('messageCount').textContent = messageCount;
+            document.getElementById('cursorUpdateCount').textContent = cursorUpdateCount;
+            document.getElementById('totalBytes').textContent = (totalBytes / 1024).toFixed(2) + ' KB';
+
+            // 計算緩存命中率
+            const total = cacheHits + cacheMisses;
+            const hitRate = total > 0 ? (cacheHits / total * 100).toFixed(1) : 0;
+            document.getElementById('cacheHitRate').textContent = hitRate + '%';
+        }
+
+        function updateStatus(state, text, showSpinner = false) {
+            const statusEl = document.getElementById('status');
+            statusEl.className = 'status ' + state;
+            statusEl.innerHTML = showSpinner ?
+                `<span class="spinner"></span> ${text}` :
+                text;
+        }
+
+        function log(message, type = 'info') {
+            const logEl = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = 'log-entry ' + type;
+            entry.textContent = `[${timestamp}] ${message}`;
+            logEl.appendChild(entry);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+            log('📝 日誌已清除', 'info');
+        }
+
+        // 頁面加載完成
+        window.addEventListener('load', () => {
+            log('✨ 頁面已加載', 'info');
+            initProtobuf();
+        });
+    </script>
+</body>
+</html>
+
