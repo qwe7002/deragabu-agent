@@ -16,7 +16,7 @@ use crate::cursor::{
 };
 use crate::cursor_capture::{
     CursorEvent, create_hide_message, create_scaled_cursor_message,
-    get_last_cursor_id, get_raw_cursor,
+    get_last_cursor_id, get_cached_cursor,
 };
 
 /// Run WebSocket server (sends cursor data to connected clients, scaled per client DPR)
@@ -93,7 +93,7 @@ async fn handle_client(
             Ok(event) = rx_broadcast.recv() => {
                 match event {
                     CursorEvent::CursorChanged(ref cursor_id) => {
-                        if let Some(_raw) = get_raw_cursor(cursor_id) {
+                        if let Some(_cached) = get_cached_cursor(cursor_id) {
                             if sent_cursor_ids.contains(cursor_id) {
                                 // Already sent to this client - send lightweight signal
                                 let signal_msg = create_signal_message(cursor_id);

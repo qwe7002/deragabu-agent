@@ -31,6 +31,9 @@ anyhow = "1"
 # Image encoding (WebP)
 webp = "0.3"
 
+# Animated WebP encoding
+webp-animation = "0.9"
+
 # Hashing for cursor ID
 blake3 = "1"
 
