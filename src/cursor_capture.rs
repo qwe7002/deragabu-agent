@@ -74,7 +74,8 @@ enum CaptureResult {
     Native(String),
 }
 
-/// Summary of XOR pixel spatial distribution for cursor shape identification
+/// Summary of XOR pixel spatial distribution for cursor shape identification.
+/// Tracks pixel count, bounding box, and coordinate sums for variance computation.
 struct XorShape {
     /// Number of XOR pixels
     count: u32,
@@ -83,6 +84,13 @@ struct XorShape {
     max_x: u32,
     min_y: u32,
     max_y: u32,
+    /// Sums for variance calculation
+    sum_x: f64,
+    sum_y: f64,
+    sum_x2: f64,
+    sum_y2: f64,
+    /// Sum of x*y for covariance (diagonal detection)
+    sum_xy: f64,
 }
 
 impl XorShape {
@@ -93,6 +101,11 @@ impl XorShape {
             max_x: 0,
             min_y: u32::MAX,
             max_y: 0,
+            sum_x: 0.0,
+            sum_y: 0.0,
+            sum_x2: 0.0,
+            sum_y2: 0.0,
+            sum_xy: 0.0,
         }
     }
 
@@ -102,6 +115,13 @@ impl XorShape {
         self.max_x = self.max_x.max(x);
         self.min_y = self.min_y.min(y);
         self.max_y = self.max_y.max(y);
+        let xf = x as f64;
+        let yf = y as f64;
+        self.sum_x += xf;
+        self.sum_y += yf;
+        self.sum_x2 += xf * xf;
+        self.sum_y2 += yf * yf;
+        self.sum_xy += xf * yf;
     }
 
     fn xor_width(&self) -> u32 {
@@ -110,6 +130,27 @@ impl XorShape {
 
     fn xor_height(&self) -> u32 {
         if self.count == 0 { 0 } else { self.max_y - self.min_y + 1 }
+    }
+
+    /// Variance of X coordinates
+    fn var_x(&self) -> f64 {
+        if self.count < 2 { return 0.0; }
+        let n = self.count as f64;
+        (self.sum_x2 / n) - (self.sum_x / n).powi(2)
+    }
+
+    /// Variance of Y coordinates
+    fn var_y(&self) -> f64 {
+        if self.count < 2 { return 0.0; }
+        let n = self.count as f64;
+        (self.sum_y2 / n) - (self.sum_y / n).powi(2)
+    }
+
+    /// Covariance of X and Y coordinates (positive = NW-SE correlation)
+    fn cov_xy(&self) -> f64 {
+        if self.count < 2 { return 0.0; }
+        let n = self.count as f64;
+        (self.sum_xy / n) - (self.sum_x / n) * (self.sum_y / n)
     }
 }
 
@@ -851,7 +892,7 @@ unsafe fn identify_system_cursor(
 }
 
 /// Guess CSS cursor type from XOR pixel spatial distribution.
-/// Analyzes bounding box aspect ratio and hotspot position.
+/// Uses variance of pixel coordinates and covariance for orientation detection.
 fn guess_cursor_from_xor_shape(
     cursor_width: u32,
     cursor_height: u32,
@@ -863,68 +904,66 @@ fn guess_cursor_from_xor_shape(
         return "default".to_string();
     }
 
-    let xor_w = xor_shape.xor_width() as f32;
-    let xor_h = xor_shape.xor_height() as f32;
-    let aspect = xor_h / xor_w.max(1.0);
-
-    // Check if hotspot is roughly centered in the cursor
+    // Check hotspot position relative to cursor bounds
     let hx_ratio = hotspot_x as f32 / cursor_width.max(1) as f32;
     let hy_ratio = hotspot_y as f32 / cursor_height.max(1) as f32;
+
+    // Top-left hotspot = arrow/pointer cursor
+    if hx_ratio < 0.3 && hy_ratio < 0.3 {
+        return "default".to_string();
+    }
+
+    // Non-centered hotspot - unusual, use default
     let hotspot_centered = (hx_ratio - 0.5).abs() < 0.25 && (hy_ratio - 0.5).abs() < 0.25;
-
-    // Check if hotspot is near top-left (typical for arrow/pointer cursors)
-    let hotspot_top_left = hx_ratio < 0.3 && hy_ratio < 0.3;
-
-    if hotspot_top_left {
-        return "default".to_string();
-    }
-
     if !hotspot_centered {
-        // Non-centered, non-top-left hotspot - unusual, use default
         return "default".to_string();
     }
 
-    // Centered hotspot with XOR pixels - likely a resize, crosshair, or move cursor
-    // Use aspect ratio of XOR pixel bounding box to distinguish
+    // Centered hotspot with XOR pixels - use variance-based orientation detection.
+    // This is much more robust than bounding-box aspect ratio because cursor
+    // arrowheads don't skew the variance as much as they skew the bounding box.
+    let var_x = xor_shape.var_x();
+    let var_y = xor_shape.var_y();
+    let cov_xy = xor_shape.cov_xy();
 
-    // Very narrow and tall: text cursor (I-beam)
-    if aspect > 3.0 && xor_w < cursor_width as f32 * 0.3 {
+    let var_ratio = var_y / var_x.max(0.001); // > 1 = vertical spread, < 1 = horizontal spread
+
+    // Correlation coefficient: strong positive = NW-SE diagonal, strong negative = NE-SW diagonal
+    let correlation = cov_xy / (var_x.sqrt() * var_y.sqrt()).max(0.001);
+
+    // Very narrow and tall XOR region: text cursor (I-beam)
+    let xor_w = xor_shape.xor_width() as f32;
+    if var_ratio > 6.0 && xor_w < cursor_width as f32 * 0.3 {
         return "text".to_string();
     }
 
-    // Taller than wide: vertical resize (ns-resize / row-resize)
-    if aspect > 1.4 {
-        return "ns-resize".to_string();
-    }
+    debug!(
+        "XOR shape analysis: var_x={:.1}, var_y={:.1}, ratio={:.2}, corr={:.3}, bbox={}x{}",
+        var_x, var_y, var_ratio, correlation,
+        xor_shape.xor_width(), xor_shape.xor_height()
+    );
 
-    // Wider than tall: horizontal resize (ew-resize / col-resize)
-    if aspect < 0.7 {
-        return "ew-resize".to_string();
-    }
-
-    // Roughly square XOR region with centered hotspot
-    // Distinguish between diagonal resize, crosshair, and move
-    // Check if XOR pixels are concentrated along diagonals
-    let xor_cx = (xor_shape.min_x + xor_shape.max_x) as f32 / 2.0;
-    let xor_cy = (xor_shape.min_y + xor_shape.max_y) as f32 / 2.0;
-    let cursor_cx = cursor_width as f32 / 2.0;
-    let cursor_cy = cursor_height as f32 / 2.0;
-
-    // If XOR center is offset towards NW-SE diagonal
-    let dx = xor_cx - cursor_cx;
-    let dy = xor_cy - cursor_cy;
-
-    if dx.abs() > cursor_width as f32 * 0.1 || dy.abs() > cursor_height as f32 * 0.1 {
-        // XOR region is offset from center
-        if (dx > 0.0) == (dy > 0.0) {
+    // Check for strong diagonal correlation first (diagonal resize cursors)
+    if correlation.abs() > 0.5 {
+        // Significant diagonal alignment
+        if correlation > 0.0 {
             return "nwse-resize".to_string();
         } else {
             return "nesw-resize".to_string();
         }
     }
 
-    // Centered, roughly square XOR region - could be move or crosshair
-    // Move cursor typically covers more area than crosshair
+    // Vertical spread dominates: ns-resize / row-resize (↕)
+    if var_ratio > 1.3 {
+        return "ns-resize".to_string();
+    }
+
+    // Horizontal spread dominates: ew-resize / col-resize (↔)
+    if var_ratio < 0.77 {
+        return "ew-resize".to_string();
+    }
+
+    // Roughly isotropic XOR region - could be move or crosshair
     let coverage = xor_shape.count as f32 / (cursor_width * cursor_height) as f32;
     if coverage > 0.05 {
         "move".to_string()
