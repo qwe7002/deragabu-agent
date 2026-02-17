@@ -26,6 +26,13 @@ use super::{
 /// Last Windows cursor handle (HCURSOR value)
 static LAST_CURSOR_HANDLE: Mutex<isize> = Mutex::new(0);
 
+/// Counter for consecutive "cursor hidden & not at edge" detections (debounce)
+static HIDE_COUNTER: Mutex<u32> = Mutex::new(0);
+
+/// Number of consecutive polls required before confirming a genuine cursor hide.
+/// At ~16ms per poll this adds ~48ms latency to real hides, which is imperceptible.
+const HIDE_CONFIRM_FRAMES: u32 = 3;
+
 /// Default frame delay for animated cursors (ms) - Windows standard is 1 jiffy = ~60ms
 const ANIM_FRAME_DELAY_MS: i32 = 60;
 
@@ -77,7 +84,7 @@ fn is_cursor_at_screen_edge() -> bool {
         let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
-        const EDGE_MARGIN: i32 = 2;
+        const EDGE_MARGIN: i32 = 10;
 
         pt.x <= vx + EDGE_MARGIN
             || pt.y <= vy + EDGE_MARGIN
@@ -137,19 +144,37 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
             // Check if cursor is at screen edge — if so, ignore the hide
             // (Windows reports cursor as hidden when it goes beyond the screen boundary)
             if is_cursor_at_screen_edge() {
+                // Reset debounce counter — cursor is at edge, not genuinely hidden
+                *HIDE_COUNTER.lock().unwrap() = 0;
                 return Ok(None);
             }
 
-            // Genuine hide (e.g. application hid the cursor for text input)
+            // Debounce: require several consecutive frames where cursor is
+            // not-showing AND not-at-edge before we treat it as a real hide.
+            // This prevents a false hide when the cursor races to a corner
+            // and GetCursorPos lags behind the CURSOR_SHOWING flag.
+            let mut counter = HIDE_COUNTER.lock().unwrap();
+            *counter += 1;
+
+            if *counter < HIDE_CONFIRM_FRAMES {
+                return Ok(None); // wait for more confirmations
+            }
+
+            // Confirmed hide after N consecutive frames
             let mut last = LAST_CURSOR_HANDLE.lock().unwrap();
             if *last != 0 {
                 *last = 0;
                 *LAST_CURSOR_ID.lock().unwrap() = None;
-                debug!("Cursor hidden (not at edge)");
+                *counter = 0;
+                debug!("Cursor hidden (confirmed after {} frames, not at edge)", HIDE_CONFIRM_FRAMES);
                 return Ok(Some(CursorEvent::CursorHidden));
             }
+            *counter = 0;
             return Ok(None);
         }
+
+        // Cursor IS showing — reset the hide debounce counter
+        *HIDE_COUNTER.lock().unwrap() = 0;
 
         let hcursor = cursor_info.hCursor;
         let cursor_handle = hcursor.0 as isize;
