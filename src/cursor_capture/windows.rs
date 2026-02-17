@@ -39,6 +39,11 @@ static WAS_AT_EDGE: Mutex<bool> = Mutex::new(false);
 /// position is momentarily outside the edge margin.
 static EDGE_COOLDOWN: Mutex<u32> = Mutex::new(0);
 
+/// Whether the cursor was recently in the "top zone" of the screen.
+/// When the cursor leaves this zone (moves downward), we force-resend
+/// the current cursor state so the client stays in sync.
+static WAS_NEAR_TOP: Mutex<bool> = Mutex::new(false);
+
 /// Number of cooldown frames after leaving an edge before a hide is allowed.
 /// At ~16ms per poll this is ~320ms — enough to absorb edge position jitter.
 const EDGE_COOLDOWN_FRAMES: u32 = 20;
@@ -48,6 +53,11 @@ const EDGE_COOLDOWN_FRAMES: u32 = 20;
 /// imperceptible but long enough for ptScreenPos to converge to the actual
 /// corner position when the cursor races to a screen edge.
 const HIDE_CONFIRM_FRAMES: u32 = 10;
+
+/// Vertical margin (in pixels) that defines the "top zone" of the screen.
+/// When the cursor leaves this zone moving downward, we force-resend the
+/// cursor state.  Larger than EDGE_MARGIN to cover taskbars and menus.
+const TOP_ZONE_MARGIN: i32 = 100;
 
 /// Default frame delay for animated cursors (ms) - Windows standard is 1 jiffy = ~60ms
 const ANIM_FRAME_DELAY_MS: i32 = 60;
@@ -100,6 +110,15 @@ fn point_near_edge(pt: &POINT) -> bool {
             || pt.y <= vy + EDGE_MARGIN
             || pt.x >= vx + vw - EDGE_MARGIN
             || pt.y >= vy + vh - EDGE_MARGIN
+    }
+}
+
+/// Check if a point is within `TOP_ZONE_MARGIN` pixels of the top of the
+/// virtual screen.
+fn point_near_top(pt: &POINT) -> bool {
+    unsafe {
+        let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        pt.y <= vy + TOP_ZONE_MARGIN
     }
 }
 
@@ -264,20 +283,40 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
             false
         };
 
+        // Track "top zone": when the cursor leaves the top area of the screen
+        // (moves downward), force-resend the cursor state.  This uses a larger
+        // margin than the generic edge detection to cover taskbars and menus.
+        let currently_near_top = point_near_top(&cursor_info.ptScreenPos);
+        let came_from_top = if currently_near_top {
+            *WAS_NEAR_TOP.lock().unwrap() = true;
+            false
+        } else {
+            let mut flag = WAS_NEAR_TOP.lock().unwrap();
+            let was = *flag;
+            *flag = false;
+            was
+        };
+
         // Check if cursor handle changed
         let handle_changed = {
             let last = LAST_CURSOR_HANDLE.lock().unwrap();
             cursor_handle != *last
         };
 
-        if !handle_changed && !returning_from_edge {
-            return Ok(None); // Same cursor and not returning from edge
+        let needs_resend = returning_from_edge || came_from_top;
+
+        if !handle_changed && !needs_resend {
+            return Ok(None); // Same cursor and not returning from edge/top
         }
 
-        if returning_from_edge && !handle_changed {
+        if needs_resend && !handle_changed {
             // Same cursor, but we need to re-notify the client.
             // The cursor is already cached — just resend a CursorChanged.
-            debug!("Cursor returning from edge — force resending current cursor");
+            if came_from_top {
+                debug!("Cursor leaving top zone — force resending current cursor");
+            } else {
+                debug!("Cursor returning from edge — force resending current cursor");
+            }
             let last_id = LAST_CURSOR_ID.lock().unwrap().clone();
             if let Some(cursor_id) = last_id {
                 return Ok(Some(CursorEvent::CursorChanged(cursor_id)));
