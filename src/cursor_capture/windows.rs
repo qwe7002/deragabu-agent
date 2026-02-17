@@ -12,7 +12,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, SetProcessDpiAwareness, PROCESS_PER_MONITOR_DPI_AWARE};
 use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CopyIcon, DestroyIcon, DrawIconEx, GetCursorInfo, GetCursorPos, GetIconInfo,
+    CopyIcon, DestroyIcon, DrawIconEx, GetCursorInfo, GetIconInfo,
     GetSystemMetrics, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, HCURSOR, HICON, ICONINFO,
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
@@ -72,19 +72,20 @@ pub fn get_dpi_scale() -> f32 {
 /// Check if the cursor position is at or beyond the virtual screen edge.
 /// When the cursor moves past the screen boundary, Windows may report it as hidden,
 /// but we want to keep the last cursor visible on the client in that case.
-fn is_cursor_at_screen_edge() -> bool {
+///
+/// `pt` should come from `CURSORINFO.ptScreenPos` so that the position is from the
+/// same snapshot as the `CURSOR_SHOWING` flag, avoiding a race with a separate
+/// `GetCursorPos` call.
+fn is_cursor_at_screen_edge(pt: &POINT) -> bool {
     unsafe {
-        let mut pt = POINT::default();
-        if GetCursorPos(&mut pt).is_err() {
-            return false;
-        }
-
         let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
         let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
         let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
-        const EDGE_MARGIN: i32 = 10;
+        // At screen corners Windows is especially prone to briefly clearing
+        // CURSOR_SHOWING, so we use a generous margin along each edge.
+        const EDGE_MARGIN: i32 = 20;
 
         pt.x <= vx + EDGE_MARGIN
             || pt.y <= vy + EDGE_MARGIN
@@ -143,7 +144,8 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
         if cursor_info.flags.0 & CURSOR_SHOWING.0 == 0 {
             // Check if cursor is at screen edge — if so, ignore the hide
             // (Windows reports cursor as hidden when it goes beyond the screen boundary)
-            if is_cursor_at_screen_edge() {
+            // Use ptScreenPos from the same CURSORINFO snapshot to avoid races.
+            if is_cursor_at_screen_edge(&cursor_info.ptScreenPos) {
                 // Reset debounce counter — cursor is at edge, not genuinely hidden
                 *HIDE_COUNTER.lock().unwrap() = 0;
                 return Ok(None);
