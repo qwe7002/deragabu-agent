@@ -12,7 +12,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, SetProcessDpiAwareness, PROCESS_PER_MONITOR_DPI_AWARE};
 use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CopyIcon, DestroyIcon, DrawIconEx, GetCursorInfo, GetIconInfo,
+    CopyIcon, DestroyIcon, DrawIconEx, GetCursorInfo, GetCursorPos, GetIconInfo,
     GetSystemMetrics, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, HCURSOR, HICON, ICONINFO,
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
@@ -30,8 +30,10 @@ static LAST_CURSOR_HANDLE: Mutex<isize> = Mutex::new(0);
 static HIDE_COUNTER: Mutex<u32> = Mutex::new(0);
 
 /// Number of consecutive polls required before confirming a genuine cursor hide.
-/// At ~16ms per poll this adds ~48ms latency to real hides, which is imperceptible.
-const HIDE_CONFIRM_FRAMES: u32 = 3;
+/// At ~16ms per poll this adds ~160ms latency to real hides, which is still
+/// imperceptible but long enough for ptScreenPos to converge to the actual
+/// corner position when the cursor races to a screen edge.
+const HIDE_CONFIRM_FRAMES: u32 = 10;
 
 /// Default frame delay for animated cursors (ms) - Windows standard is 1 jiffy = ~60ms
 const ANIM_FRAME_DELAY_MS: i32 = 60;
@@ -69,29 +71,48 @@ pub fn get_dpi_scale() -> f32 {
     }
 }
 
-/// Check if the cursor position is at or beyond the virtual screen edge.
-/// When the cursor moves past the screen boundary, Windows may report it as hidden,
-/// but we want to keep the last cursor visible on the client in that case.
-///
-/// `pt` should come from `CURSORINFO.ptScreenPos` so that the position is from the
-/// same snapshot as the `CURSOR_SHOWING` flag, avoiding a race with a separate
-/// `GetCursorPos` call.
-fn is_cursor_at_screen_edge(pt: &POINT) -> bool {
+/// Check if a single point is within `EDGE_MARGIN` pixels of the virtual screen
+/// boundary.
+fn point_near_edge(pt: &POINT) -> bool {
     unsafe {
         let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
         let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
         let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
-        // At screen corners Windows is especially prone to briefly clearing
-        // CURSOR_SHOWING, so we use a generous margin along each edge.
-        const EDGE_MARGIN: i32 = 20;
+        const EDGE_MARGIN: i32 = 30;
 
         pt.x <= vx + EDGE_MARGIN
             || pt.y <= vy + EDGE_MARGIN
             || pt.x >= vx + vw - EDGE_MARGIN
             || pt.y >= vy + vh - EDGE_MARGIN
     }
+}
+
+/// Check if the cursor position is at or beyond the virtual screen edge.
+///
+/// Two independent position sources are consulted:
+///   1. `info_pt` – `CURSORINFO.ptScreenPos` (same snapshot as `CURSOR_SHOWING`).
+///   2. `GetCursorPos`  – a separate, more up-to-date position read.
+///
+/// If **either** position is near a screen edge we assume the cursor is NOT
+/// genuinely hidden – Windows may transiently clear `CURSOR_SHOWING` when the
+/// cursor races to a corner/edge and the flag updates before the position does.
+fn is_cursor_at_screen_edge(info_pt: &POINT) -> bool {
+    // Source 1: ptScreenPos from the CURSORINFO snapshot
+    if point_near_edge(info_pt) {
+        return true;
+    }
+
+    // Source 2: a fresh GetCursorPos call (position may be more current)
+    unsafe {
+        let mut live_pt = POINT::default();
+        if GetCursorPos(&mut live_pt).is_ok() && point_near_edge(&live_pt) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Run cursor capture loop
@@ -142,21 +163,35 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
 
         // Cursor not showing
         if cursor_info.flags.0 & CURSOR_SHOWING.0 == 0 {
-            // Check if cursor is at screen edge — if so, ignore the hide
-            // (Windows reports cursor as hidden when it goes beyond the screen boundary)
-            // Use ptScreenPos from the same CURSORINFO snapshot to avoid races.
+            // Check if cursor is at screen edge — if so, ignore the hide.
+            // Two position sources are consulted to work around ptScreenPos
+            // lagging behind the CURSOR_SHOWING flag.
             if is_cursor_at_screen_edge(&cursor_info.ptScreenPos) {
                 // Reset debounce counter — cursor is at edge, not genuinely hidden
-                *HIDE_COUNTER.lock().unwrap() = 0;
+                let mut counter = HIDE_COUNTER.lock().unwrap();
+                if *counter > 0 {
+                    debug!(
+                        "Cursor not-showing but at edge (ptScreenPos={},{}) — suppressing hide (counter was {})",
+                        cursor_info.ptScreenPos.x, cursor_info.ptScreenPos.y, *counter
+                    );
+                }
+                *counter = 0;
                 return Ok(None);
             }
 
-            // Debounce: require several consecutive frames where cursor is
+            // Debounce: require many consecutive frames where cursor is
             // not-showing AND not-at-edge before we treat it as a real hide.
-            // This prevents a false hide when the cursor races to a corner
-            // and GetCursorPos lags behind the CURSOR_SHOWING flag.
+            // This is intentionally generous to avoid false hides when the
+            // cursor races to a corner — the position fields may need
+            // several frames to converge to the actual edge position.
             let mut counter = HIDE_COUNTER.lock().unwrap();
             *counter += 1;
+
+            debug!(
+                "Cursor not-showing, not at edge (ptScreenPos={},{}) — hide counter {}/{}",
+                cursor_info.ptScreenPos.x, cursor_info.ptScreenPos.y,
+                *counter, HIDE_CONFIRM_FRAMES
+            );
 
             if *counter < HIDE_CONFIRM_FRAMES {
                 return Ok(None); // wait for more confirmations
