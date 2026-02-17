@@ -10,9 +10,11 @@ use windows::Win32::Graphics::Gdi::{
     BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLACKNESS, DIB_RGB_COLORS, WHITENESS,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, SetProcessDpiAwareness, PROCESS_PER_MONITOR_DPI_AWARE};
+use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CopyIcon, DestroyIcon, DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING,
-    DI_NORMAL, HCURSOR, HICON, ICONINFO,
+    CopyIcon, DestroyIcon, DrawIconEx, GetCursorInfo, GetCursorPos, GetIconInfo,
+    GetSystemMetrics, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, HCURSOR, HICON, ICONINFO,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
 use super::{
@@ -57,6 +59,30 @@ pub fn get_dpi_scale() -> f32 {
     unsafe {
         let dpi = GetDpiForSystem();
         dpi as f32 / 96.0
+    }
+}
+
+/// Check if the cursor position is at or beyond the virtual screen edge.
+/// When the cursor moves past the screen boundary, Windows may report it as hidden,
+/// but we want to keep the last cursor visible on the client in that case.
+fn is_cursor_at_screen_edge() -> bool {
+    unsafe {
+        let mut pt = POINT::default();
+        if GetCursorPos(&mut pt).is_err() {
+            return false;
+        }
+
+        let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+        const EDGE_MARGIN: i32 = 2;
+
+        pt.x <= vx + EDGE_MARGIN
+            || pt.y <= vy + EDGE_MARGIN
+            || pt.x >= vx + vw - EDGE_MARGIN
+            || pt.y >= vy + vh - EDGE_MARGIN
     }
 }
 
@@ -106,13 +132,20 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
             return Err(anyhow!("GetCursorInfo failed"));
         }
 
-        // Cursor hidden
+        // Cursor not showing
         if cursor_info.flags.0 & CURSOR_SHOWING.0 == 0 {
+            // Check if cursor is at screen edge — if so, ignore the hide
+            // (Windows reports cursor as hidden when it goes beyond the screen boundary)
+            if is_cursor_at_screen_edge() {
+                return Ok(None);
+            }
+
+            // Genuine hide (e.g. application hid the cursor for text input)
             let mut last = LAST_CURSOR_HANDLE.lock().unwrap();
             if *last != 0 {
                 *last = 0;
                 *LAST_CURSOR_ID.lock().unwrap() = None;
-                debug!("Cursor hidden");
+                debug!("Cursor hidden (not at edge)");
                 return Ok(Some(CursorEvent::CursorHidden));
             }
             return Ok(None);

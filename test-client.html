@@ -1,0 +1,1002 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deragabu Agent - Cursor Test Client</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        header h1 {
+            font-size: 18px;
+            font-weight: 600;
+            color: #f0f6fc;
+        }
+
+        header h1 span {
+            color: #58a6ff;
+        }
+
+        .connection-controls {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .connection-controls label {
+            font-size: 13px;
+            color: #8b949e;
+        }
+
+        .connection-controls input {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            width: 200px;
+        }
+
+        .connection-controls input:focus {
+            border-color: #58a6ff;
+            outline: none;
+        }
+
+        .btn {
+            padding: 5px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            border: 1px solid #30363d;
+            transition: all 0.15s ease;
+        }
+
+        .btn-connect {
+            background: #238636;
+            color: #fff;
+            border-color: #238636;
+        }
+
+        .btn-connect:hover { background: #2ea043; }
+        .btn-connect:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .btn-disconnect {
+            background: #da3633;
+            color: #fff;
+            border-color: #da3633;
+        }
+
+        .btn-disconnect:hover { background: #f85149; }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            padding: 3px 10px;
+            border-radius: 12px;
+            background: #1c2128;
+            border: 1px solid #30363d;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #484f58;
+        }
+
+        .status-dot.connected { background: #3fb950; }
+        .status-dot.connecting { background: #d29922; animation: pulse 1s infinite; }
+        .status-dot.error { background: #f85149; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 320px;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        /* Cursor preview area */
+        .preview-area {
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid #30363d;
+        }
+
+        .preview-header {
+            padding: 12px 20px;
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            font-size: 13px;
+            font-weight: 600;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .preview-canvas {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            background:
+                linear-gradient(45deg, #161b22 25%, transparent 25%),
+                linear-gradient(-45deg, #161b22 25%, transparent 25%),
+                linear-gradient(45deg, transparent 75%, #161b22 75%),
+                linear-gradient(-45deg, transparent 75%, #161b22 75%);
+            background-size: 20px 20px;
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+            background-color: #0d1117;
+            min-height: 400px;
+        }
+
+        .cursor-display {
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .cursor-display img {
+            image-rendering: pixelated;
+            max-width: 256px;
+            max-height: 256px;
+        }
+
+        .cursor-display .hotspot-marker {
+            position: absolute;
+            width: 6px;
+            height: 6px;
+            background: #f85149;
+            border: 1px solid #fff;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .no-cursor-text {
+            color: #484f58;
+            font-size: 14px;
+            text-align: center;
+        }
+
+        .no-cursor-text p:first-child {
+            font-size: 40px;
+            margin-bottom: 12px;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* Stats panel */
+        .stats-panel {
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            padding: 16px 20px;
+        }
+
+        .stats-panel h3 {
+            font-size: 13px;
+            font-weight: 600;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .stat-item {
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 8px 12px;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: #8b949e;
+            margin-bottom: 2px;
+        }
+
+        .stat-value {
+            font-size: 16px;
+            font-weight: 600;
+            color: #f0f6fc;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* Cached cursors panel */
+        .cache-panel {
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            padding: 16px 20px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .cache-panel h3 {
+            font-size: 13px;
+            font-weight: 600;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+        }
+
+        .cache-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .cache-item {
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 6px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            cursor: pointer;
+            transition: border-color 0.15s;
+        }
+
+        .cache-item:hover { border-color: #58a6ff; }
+        .cache-item.active { border-color: #3fb950; background: #0d1117; }
+
+        .cache-item img {
+            width: 32px;
+            height: 32px;
+            image-rendering: pixelated;
+            object-fit: contain;
+        }
+
+        .cache-item .cache-id {
+            font-size: 9px;
+            color: #484f58;
+            max-width: 48px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Event log */
+        .log-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .log-header {
+            padding: 12px 20px;
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            font-size: 13px;
+            font-weight: 600;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .log-header .btn-clear {
+            background: transparent;
+            border: 1px solid #30363d;
+            color: #8b949e;
+            padding: 2px 8px;
+            font-size: 11px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .log-header .btn-clear:hover {
+            color: #c9d1d9;
+            border-color: #484f58;
+        }
+
+        .log-entries {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px 0;
+            font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+            font-size: 11px;
+            line-height: 1.5;
+        }
+
+        .log-entry {
+            padding: 2px 16px;
+            display: flex;
+            gap: 8px;
+            align-items: baseline;
+        }
+
+        .log-entry:hover { background: #161b22; }
+
+        .log-time {
+            color: #484f58;
+            flex-shrink: 0;
+            font-size: 10px;
+        }
+
+        .log-type {
+            flex-shrink: 0;
+            padding: 0 5px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .log-type.data { background: #1f6feb33; color: #58a6ff; }
+        .log-type.signal { background: #23863633; color: #3fb950; }
+        .log-type.hide { background: #da363333; color: #f85149; }
+        .log-type.heartbeat { background: #484f5833; color: #8b949e; }
+        .log-type.info { background: #d2992233; color: #d29922; }
+        .log-type.error { background: #da363333; color: #f85149; }
+
+        .log-msg { color: #c9d1d9; word-break: break-all; }
+
+        /* Live cursor tracking area */
+        .tracking-area {
+            position: relative;
+            background: #161b22;
+            border: 2px dashed #30363d;
+            border-radius: 8px;
+            margin: 20px;
+            padding: 20px;
+            min-height: 200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        .tracking-area .hint {
+            color: #484f58;
+            font-size: 13px;
+        }
+
+        .remote-cursor {
+            position: absolute;
+            pointer-events: none;
+            z-index: 100;
+            image-rendering: pixelated;
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #0d1117; }
+        ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #484f58; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1><span>Deragabu</span> Agent — Cursor Test Client</h1>
+    <div class="connection-controls">
+        <label for="ws-url">Server:</label>
+        <input type="text" id="ws-url" value="ws://127.0.0.1:9000" />
+        <button class="btn btn-connect" id="btn-connect" onclick="connect()">Connect</button>
+        <button class="btn btn-disconnect" id="btn-disconnect" onclick="disconnect()" style="display:none;">Disconnect</button>
+        <div class="status-badge">
+            <div class="status-dot" id="status-dot"></div>
+            <span id="status-text">Disconnected</span>
+        </div>
+    </div>
+</header>
+
+<div class="main-content">
+    <div class="preview-area">
+        <div class="preview-header">Cursor Preview</div>
+        <div class="preview-canvas" id="preview-canvas">
+            <div class="no-cursor-text" id="no-cursor">
+                <p>🖱️</p>
+                <p>No cursor data received yet.<br>Connect to the server and move your mouse.</p>
+            </div>
+            <div class="cursor-display" id="cursor-display" style="display:none;">
+                <img id="cursor-img" alt="cursor" />
+                <div class="hotspot-marker" id="hotspot-marker"></div>
+            </div>
+        </div>
+
+        <div class="tracking-area" id="tracking-area">
+            <span class="hint">Move mouse here to see remote cursor overlay</span>
+            <img class="remote-cursor" id="remote-cursor" style="display:none;" alt="" />
+        </div>
+    </div>
+
+    <div class="sidebar">
+        <div class="stats-panel">
+            <h3>Statistics</h3>
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-label">Messages</div>
+                    <div class="stat-value" id="stat-messages">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Data Msgs</div>
+                    <div class="stat-value" id="stat-data">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Signals</div>
+                    <div class="stat-value" id="stat-signals">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Cached</div>
+                    <div class="stat-value" id="stat-cached">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Bytes Recv</div>
+                    <div class="stat-value" id="stat-bytes">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Client DPR</div>
+                    <div class="stat-value" id="stat-dpr">-</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="cache-panel">
+            <h3>Cached Cursors</h3>
+            <div class="cache-list" id="cache-list">
+                <span style="color:#484f58; font-size:12px;">No cursors cached yet.</span>
+            </div>
+        </div>
+
+        <div class="log-panel">
+            <div class="log-header">
+                Event Log
+                <button class="btn-clear" onclick="clearLog()">Clear</button>
+            </div>
+            <div class="log-entries" id="log-entries"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+// ─── Protobuf Decoder (minimal, hand-rolled for cursor.proto) ──────────────
+
+const MessageType = {
+    UNSPECIFIED: 0,
+    CURSOR_DATA: 1,
+    CURSOR_SIGNAL: 2,
+    CURSOR_HIDE: 3,
+    HEARTBEAT: 4,
+};
+
+/**
+ * Minimal protobuf varint/wire-type decoder for CursorMessage.
+ * Supports the exact schema defined in cursor.proto.
+ */
+class ProtobufReader {
+    constructor(buffer) {
+        this.view = new DataView(buffer);
+        this.offset = 0;
+        this.length = buffer.byteLength;
+        this.buffer = buffer;
+    }
+
+    hasMore() { return this.offset < this.length; }
+
+    readVarint() {
+        let result = 0;
+        let shift = 0;
+        while (this.offset < this.length) {
+            const byte = this.view.getUint8(this.offset++);
+            result |= (byte & 0x7f) << shift;
+            if ((byte & 0x80) === 0) return result >>> 0;
+            shift += 7;
+            if (shift > 35) throw new Error('Varint too long');
+        }
+        throw new Error('Unexpected end of data');
+    }
+
+    readSignedVarint() {
+        const v = this.readVarint();
+        return v | 0; // convert to signed 32-bit
+    }
+
+    readBytes() {
+        const len = this.readVarint();
+        const bytes = new Uint8Array(this.buffer, this.offset, len);
+        this.offset += len;
+        return bytes;
+    }
+
+    readString() {
+        const bytes = this.readBytes();
+        return new TextDecoder().decode(bytes);
+    }
+
+    readFloat() {
+        const v = this.view.getFloat32(this.offset, true);
+        this.offset += 4;
+        return v;
+    }
+
+    readFixed64() {
+        // Read as two 32-bit values (little-endian)
+        const lo = this.view.getUint32(this.offset, true);
+        const hi = this.view.getUint32(this.offset + 4, true);
+        this.offset += 8;
+        return lo + hi * 0x100000000;
+    }
+
+    skip(wireType) {
+        switch (wireType) {
+            case 0: this.readVarint(); break;
+            case 1: this.offset += 8; break;
+            case 2: { const len = this.readVarint(); this.offset += len; break; }
+            case 5: this.offset += 4; break;
+            default: throw new Error(`Unknown wire type: ${wireType}`);
+        }
+    }
+}
+
+function decodeCursorData(reader, length) {
+    const end = reader.offset + length;
+    const data = {
+        cursor_id: '',
+        image_data: null,
+        width: 0, height: 0,
+        hotspot_x: 0, hotspot_y: 0,
+        dpi_scale: 1.0,
+        is_animated: false,
+        frame_delay_ms: 0,
+    };
+
+    while (reader.offset < end) {
+        const tag = reader.readVarint();
+        const fieldNumber = tag >>> 3;
+        const wireType = tag & 0x7;
+
+        switch (fieldNumber) {
+            case 1: data.cursor_id = reader.readString(); break;
+            case 2: data.image_data = reader.readBytes(); break;
+            case 3: data.width = reader.readSignedVarint(); break;
+            case 4: data.height = reader.readSignedVarint(); break;
+            case 5: data.hotspot_x = reader.readSignedVarint(); break;
+            case 6: data.hotspot_y = reader.readSignedVarint(); break;
+            case 7: data.dpi_scale = reader.readFloat(); break;
+            case 8: data.is_animated = reader.readVarint() !== 0; break;
+            case 9: data.frame_delay_ms = reader.readVarint(); break;
+            default: reader.skip(wireType);
+        }
+    }
+    return data;
+}
+
+function decodeCursorSignal(reader, length) {
+    const end = reader.offset + length;
+    const signal = { cursor_id: '' };
+
+    while (reader.offset < end) {
+        const tag = reader.readVarint();
+        const fieldNumber = tag >>> 3;
+        const wireType = tag & 0x7;
+
+        switch (fieldNumber) {
+            case 1: signal.cursor_id = reader.readString(); break;
+            default: reader.skip(wireType);
+        }
+    }
+    return signal;
+}
+
+function decodeCursorMessage(arrayBuffer) {
+    const reader = new ProtobufReader(arrayBuffer);
+    const msg = {
+        type: MessageType.UNSPECIFIED,
+        cursor_data: null,
+        cursor_signal: null,
+        timestamp: 0,
+    };
+
+    while (reader.hasMore()) {
+        const tag = reader.readVarint();
+        const fieldNumber = tag >>> 3;
+        const wireType = tag & 0x7;
+
+        switch (fieldNumber) {
+            case 1: // type (enum, varint)
+                msg.type = reader.readVarint();
+                break;
+            case 2: { // cursor_data (length-delimited)
+                const len = reader.readVarint();
+                msg.cursor_data = decodeCursorData(reader, len);
+                break;
+            }
+            case 3: { // cursor_signal (length-delimited)
+                const len = reader.readVarint();
+                msg.cursor_signal = decodeCursorSignal(reader, len);
+                break;
+            }
+            case 4: // timestamp (varint, uint64)
+                msg.timestamp = reader.readVarint();
+                break;
+            default:
+                reader.skip(wireType);
+        }
+    }
+    return msg;
+}
+
+// ─── Application State ─────────────────────────────────────────────────────
+
+let ws = null;
+let stats = { messages: 0, data: 0, signals: 0, bytes: 0 };
+let cursorCache = {}; // cursor_id -> { blobUrl, width, height, hotspot_x, hotspot_y, is_animated }
+let activeCursorId = null;
+
+// ─── DOM Refs ───────────────────────────────────────────────────────────────
+
+const $statusDot    = document.getElementById('status-dot');
+const $statusText   = document.getElementById('status-text');
+const $btnConnect   = document.getElementById('btn-connect');
+const $btnDisconnect= document.getElementById('btn-disconnect');
+const $wsUrl        = document.getElementById('ws-url');
+const $logEntries   = document.getElementById('log-entries');
+const $noCursor     = document.getElementById('no-cursor');
+const $cursorDisplay= document.getElementById('cursor-display');
+const $cursorImg    = document.getElementById('cursor-img');
+const $hotspotMarker= document.getElementById('hotspot-marker');
+const $cacheList    = document.getElementById('cache-list');
+const $remoteCursor = document.getElementById('remote-cursor');
+const $trackingArea = document.getElementById('tracking-area');
+
+// ─── Connection ─────────────────────────────────────────────────────────────
+
+function setStatus(state, text) {
+    $statusDot.className = 'status-dot ' + state;
+    $statusText.textContent = text;
+}
+
+function connect() {
+    const url = $wsUrl.value.trim();
+    if (!url) return;
+
+    setStatus('connecting', 'Connecting...');
+    log('info', `Connecting to ${url}...`);
+
+    try {
+        ws = new WebSocket(url);
+        ws.binaryType = 'arraybuffer';
+
+        ws.onopen = () => {
+            setStatus('connected', 'Connected');
+            $btnConnect.style.display = 'none';
+            $btnDisconnect.style.display = '';
+            log('info', 'WebSocket connected');
+
+            // Send DPR to server
+            const dpr = window.devicePixelRatio || 1;
+            const config = JSON.stringify({ device_pixel_ratio: dpr });
+            ws.send(config);
+            document.getElementById('stat-dpr').textContent = dpr.toFixed(2);
+            log('info', `Sent device_pixel_ratio: ${dpr}`);
+        };
+
+        ws.onmessage = (event) => {
+            if (event.data instanceof ArrayBuffer) {
+                handleBinaryMessage(event.data);
+            } else {
+                log('info', `Text message: ${event.data}`);
+            }
+        };
+
+        ws.onerror = (event) => {
+            setStatus('error', 'Error');
+            log('error', 'WebSocket error occurred');
+        };
+
+        ws.onclose = (event) => {
+            setStatus('', 'Disconnected');
+            $btnConnect.style.display = '';
+            $btnDisconnect.style.display = 'none';
+            log('info', `Disconnected (code: ${event.code})`);
+            ws = null;
+        };
+    } catch (e) {
+        setStatus('error', 'Error');
+        log('error', `Connection failed: ${e.message}`);
+    }
+}
+
+function disconnect() {
+    if (ws) {
+        ws.close();
+        ws = null;
+    }
+}
+
+// ─── Message Handling ───────────────────────────────────────────────────────
+
+function handleBinaryMessage(data) {
+    stats.messages++;
+    stats.bytes += data.byteLength;
+
+    try {
+        const msg = decodeCursorMessage(data);
+
+        switch (msg.type) {
+            case MessageType.CURSOR_DATA:
+                handleCursorData(msg);
+                break;
+            case MessageType.CURSOR_SIGNAL:
+                handleCursorSignal(msg);
+                break;
+            case MessageType.CURSOR_HIDE:
+                handleCursorHide();
+                break;
+            case MessageType.HEARTBEAT:
+                log('heartbeat', `Heartbeat (ts: ${msg.timestamp})`);
+                break;
+            default:
+                log('info', `Unknown message type: ${msg.type}`);
+        }
+    } catch (e) {
+        log('error', `Decode error: ${e.message} (${data.byteLength} bytes)`);
+    }
+
+    updateStats();
+}
+
+function handleCursorData(msg) {
+    const cd = msg.cursor_data;
+    if (!cd || !cd.image_data) {
+        log('error', 'CursorData missing image_data');
+        return;
+    }
+
+    stats.data++;
+
+    // Create blob URL for the WebP image
+    const blob = new Blob([cd.image_data], { type: 'image/webp' });
+    const blobUrl = URL.createObjectURL(blob);
+
+    // Revoke old blob if re-caching
+    if (cursorCache[cd.cursor_id]) {
+        URL.revokeObjectURL(cursorCache[cd.cursor_id].blobUrl);
+    }
+
+    cursorCache[cd.cursor_id] = {
+        blobUrl,
+        width: cd.width,
+        height: cd.height,
+        hotspot_x: cd.hotspot_x,
+        hotspot_y: cd.hotspot_y,
+        dpi_scale: cd.dpi_scale,
+        is_animated: cd.is_animated,
+        frame_delay_ms: cd.frame_delay_ms,
+    };
+
+    log('data', `New cursor: ${cd.cursor_id.substring(0, 12)}... ${cd.width}x${cd.height} ` +
+        `hotspot(${cd.hotspot_x},${cd.hotspot_y}) ${formatBytes(cd.image_data.byteLength)} ` +
+        `${cd.is_animated ? 'animated' : 'static'}`);
+
+    setActiveCursor(cd.cursor_id);
+    updateCachePanel();
+}
+
+function handleCursorSignal(msg) {
+    const cs = msg.cursor_signal;
+    if (!cs) return;
+
+    stats.signals++;
+
+    if (cursorCache[cs.cursor_id]) {
+        log('signal', `Switch to: ${cs.cursor_id.substring(0, 12)}...`);
+        setActiveCursor(cs.cursor_id);
+    } else {
+        log('signal', `Signal for unknown cursor: ${cs.cursor_id.substring(0, 12)}... (not cached)`);
+    }
+}
+
+function handleCursorHide() {
+    log('hide', 'Cursor hidden');
+    activeCursorId = null;
+    $noCursor.style.display = '';
+    $cursorDisplay.style.display = 'none';
+    $remoteCursor.style.display = 'none';
+}
+
+function setActiveCursor(cursorId) {
+    const cached = cursorCache[cursorId];
+    if (!cached) return;
+
+    activeCursorId = cursorId;
+
+    // Update preview
+    $noCursor.style.display = 'none';
+    $cursorDisplay.style.display = '';
+    $cursorImg.src = cached.blobUrl;
+    $cursorImg.style.width = cached.width + 'px';
+    $cursorImg.style.height = cached.height + 'px';
+
+    // Position hotspot marker relative to image display
+    const scaleX = Math.min(256, cached.width) / cached.width;
+    const scaleY = Math.min(256, cached.height) / cached.height;
+    const scale = Math.min(scaleX, scaleY);
+    const displayW = cached.width * scale;
+    const displayH = cached.height * scale;
+
+    $hotspotMarker.style.left = (cached.hotspot_x * scale) + 'px';
+    $hotspotMarker.style.top = (cached.hotspot_y * scale) + 'px';
+
+    // Update remote cursor overlay
+    $remoteCursor.src = cached.blobUrl;
+    $remoteCursor.style.width = cached.width + 'px';
+    $remoteCursor.style.height = cached.height + 'px';
+    $remoteCursor.dataset.hotspotX = cached.hotspot_x;
+    $remoteCursor.dataset.hotspotY = cached.hotspot_y;
+
+    // Update cache panel active state
+    document.querySelectorAll('.cache-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.cursorId === cursorId);
+    });
+}
+
+// ─── Cursor Tracking (in tracking area) ─────────────────────────────────────
+
+$trackingArea.addEventListener('mousemove', (e) => {
+    if (!activeCursorId || !cursorCache[activeCursorId]) return;
+
+    const rect = $trackingArea.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    const hotX = parseInt($remoteCursor.dataset.hotspotX) || 0;
+    const hotY = parseInt($remoteCursor.dataset.hotspotY) || 0;
+
+    $remoteCursor.style.display = '';
+    $remoteCursor.style.left = (x - hotX) + 'px';
+    $remoteCursor.style.top = (y - hotY) + 'px';
+});
+
+$trackingArea.addEventListener('mouseleave', () => {
+    $remoteCursor.style.display = 'none';
+});
+
+// ─── UI Updates ─────────────────────────────────────────────────────────────
+
+function updateStats() {
+    document.getElementById('stat-messages').textContent = stats.messages;
+    document.getElementById('stat-data').textContent = stats.data;
+    document.getElementById('stat-signals').textContent = stats.signals;
+    document.getElementById('stat-cached').textContent = Object.keys(cursorCache).length;
+    document.getElementById('stat-bytes').textContent = formatBytes(stats.bytes);
+}
+
+function updateCachePanel() {
+    const ids = Object.keys(cursorCache);
+    if (ids.length === 0) {
+        $cacheList.innerHTML = '<span style="color:#484f58; font-size:12px;">No cursors cached yet.</span>';
+        return;
+    }
+
+    $cacheList.innerHTML = '';
+    for (const id of ids) {
+        const c = cursorCache[id];
+        const item = document.createElement('div');
+        item.className = 'cache-item' + (id === activeCursorId ? ' active' : '');
+        item.dataset.cursorId = id;
+        item.title = `ID: ${id}\nSize: ${c.width}x${c.height}\nHotspot: (${c.hotspot_x}, ${c.hotspot_y})\nAnimated: ${c.is_animated}`;
+        item.innerHTML = `
+            <img src="${c.blobUrl}" alt="cursor" />
+            <span class="cache-id">${id.substring(0, 8)}</span>
+        `;
+        item.onclick = () => setActiveCursor(id);
+        $cacheList.appendChild(item);
+    }
+}
+
+// ─── Log ────────────────────────────────────────────────────────────────────
+
+function log(type, message) {
+    const entry = document.createElement('div');
+    entry.className = 'log-entry';
+
+    const now = new Date();
+    const time = now.toTimeString().split(' ')[0] + '.' + String(now.getMilliseconds()).padStart(3, '0');
+
+    entry.innerHTML = `
+        <span class="log-time">${time}</span>
+        <span class="log-type ${type}">${type}</span>
+        <span class="log-msg">${escapeHtml(message)}</span>
+    `;
+
+    $logEntries.appendChild(entry);
+
+    // Auto-scroll to bottom
+    $logEntries.scrollTop = $logEntries.scrollHeight;
+
+    // Limit log entries
+    while ($logEntries.children.length > 500) {
+        $logEntries.removeChild($logEntries.firstChild);
+    }
+}
+
+function clearLog() {
+    $logEntries.innerHTML = '';
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+// ─── Listen for DPR changes (e.g., moving window between monitors) ──────────
+
+window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+    .addEventListener('change', () => {
+        const dpr = window.devicePixelRatio || 1;
+        document.getElementById('stat-dpr').textContent = dpr.toFixed(2);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ device_pixel_ratio: dpr }));
+            log('info', `DPR changed, sent new value: ${dpr}`);
+        }
+    });
+
+// ─── Init ───────────────────────────────────────────────────────────────────
+
+log('info', 'Deragabu Agent Test Client ready');
+log('info', `Device Pixel Ratio: ${window.devicePixelRatio || 1}`);
+log('info', 'Click "Connect" to start receiving cursor data');
+</script>
+
+</body>
+</html>
+
