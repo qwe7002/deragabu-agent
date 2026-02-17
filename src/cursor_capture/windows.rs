@@ -34,6 +34,15 @@ static HIDE_COUNTER: Mutex<u32> = Mutex::new(0);
 /// the current cursor so the client sees it reappear immediately.
 static WAS_AT_EDGE: Mutex<bool> = Mutex::new(false);
 
+/// Cooldown counter after leaving an edge.  While this is >0 we treat the
+/// cursor as "recently at edge" and suppress any hide events, even if the
+/// position is momentarily outside the edge margin.
+static EDGE_COOLDOWN: Mutex<u32> = Mutex::new(0);
+
+/// Number of cooldown frames after leaving an edge before a hide is allowed.
+/// At ~16ms per poll this is ~320ms — enough to absorb edge position jitter.
+const EDGE_COOLDOWN_FRAMES: u32 = 20;
+
 /// Number of consecutive polls required before confirming a genuine cursor hide.
 /// At ~16ms per poll this adds ~160ms latency to real hides, which is still
 /// imperceptible but long enough for ptScreenPos to converge to the actual
@@ -171,18 +180,25 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
             // Check if cursor is at screen edge — if so, ignore the hide.
             // Two position sources are consulted to work around ptScreenPos
             // lagging behind the CURSOR_SHOWING flag.
-            if is_cursor_at_screen_edge(&cursor_info.ptScreenPos) {
-                // Reset debounce counter — cursor is at edge, not genuinely hidden
+            let at_edge = is_cursor_at_screen_edge(&cursor_info.ptScreenPos);
+
+            // Also check if cursor was recently at an edge (cooldown).
+            // This prevents show/hide oscillation when the position jitters
+            // in and out of the edge margin.
+            let recently_at_edge = {
+                let cooldown = EDGE_COOLDOWN.lock().unwrap();
+                *cooldown > 0
+            };
+            let was_at_edge = *WAS_AT_EDGE.lock().unwrap();
+
+            if at_edge || recently_at_edge || was_at_edge {
+                // Reset debounce counter — cursor is at/near edge, not genuinely hidden
                 let mut counter = HIDE_COUNTER.lock().unwrap();
-                if *counter > 0 {
-                    debug!(
-                        "Cursor not-showing but at edge (ptScreenPos={},{}) — suppressing hide (counter was {})",
-                        cursor_info.ptScreenPos.x, cursor_info.ptScreenPos.y, *counter
-                    );
-                }
                 *counter = 0;
-                // Mark that we suppressed a hide while at the edge
+                // Mark/keep edge flag
                 *WAS_AT_EDGE.lock().unwrap() = true;
+                // Reset cooldown
+                *EDGE_COOLDOWN.lock().unwrap() = EDGE_COOLDOWN_FRAMES;
                 return Ok(None);
             }
 
@@ -223,13 +239,29 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
         let hcursor = cursor_info.hCursor;
         let cursor_handle = hcursor.0 as isize;
 
-        // If the cursor was suppressed at a screen edge, force-resend even if
-        // the handle hasn't changed, so the client sees the cursor reappear.
-        let returning_from_edge = {
+        // Track whether cursor is currently near any screen edge (even while
+        // CURSOR_SHOWING is set).  This covers top/bottom edges where Windows
+        // does NOT clear CURSOR_SHOWING but the client may still miss updates.
+        let currently_at_edge = is_cursor_at_screen_edge(&cursor_info.ptScreenPos);
+        if currently_at_edge {
+            *WAS_AT_EDGE.lock().unwrap() = true;
+            *EDGE_COOLDOWN.lock().unwrap() = EDGE_COOLDOWN_FRAMES;
+        }
+
+        // If the cursor was previously at a screen edge and has now moved away,
+        // force-resend so the client sees the cursor reappear / update.
+        let returning_from_edge = if !currently_at_edge {
+            // Tick down the cooldown while cursor is visible and away from edge
+            {
+                let mut cd = EDGE_COOLDOWN.lock().unwrap();
+                if *cd > 0 { *cd -= 1; }
+            }
             let mut flag = WAS_AT_EDGE.lock().unwrap();
             let was = *flag;
             *flag = false;
             was
+        } else {
+            false
         };
 
         // Check if cursor handle changed
