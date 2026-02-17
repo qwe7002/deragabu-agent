@@ -29,6 +29,11 @@ static LAST_CURSOR_HANDLE: Mutex<isize> = Mutex::new(0);
 /// Counter for consecutive "cursor hidden & not at edge" detections (debounce)
 static HIDE_COUNTER: Mutex<u32> = Mutex::new(0);
 
+/// Whether the cursor was suppressed at a screen edge.
+/// When this is true and the cursor becomes visible again, we force-resend
+/// the current cursor so the client sees it reappear immediately.
+static WAS_AT_EDGE: Mutex<bool> = Mutex::new(false);
+
 /// Number of consecutive polls required before confirming a genuine cursor hide.
 /// At ~16ms per poll this adds ~160ms latency to real hides, which is still
 /// imperceptible but long enough for ptScreenPos to converge to the actual
@@ -176,6 +181,8 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
                     );
                 }
                 *counter = 0;
+                // Mark that we suppressed a hide while at the edge
+                *WAS_AT_EDGE.lock().unwrap() = true;
                 return Ok(None);
             }
 
@@ -216,14 +223,34 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
         let hcursor = cursor_info.hCursor;
         let cursor_handle = hcursor.0 as isize;
 
+        // If the cursor was suppressed at a screen edge, force-resend even if
+        // the handle hasn't changed, so the client sees the cursor reappear.
+        let returning_from_edge = {
+            let mut flag = WAS_AT_EDGE.lock().unwrap();
+            let was = *flag;
+            *flag = false;
+            was
+        };
+
         // Check if cursor handle changed
         let handle_changed = {
             let last = LAST_CURSOR_HANDLE.lock().unwrap();
             cursor_handle != *last
         };
 
-        if !handle_changed {
-            return Ok(None); // Same cursor, nothing to do
+        if !handle_changed && !returning_from_edge {
+            return Ok(None); // Same cursor and not returning from edge
+        }
+
+        if returning_from_edge && !handle_changed {
+            // Same cursor, but we need to re-notify the client.
+            // The cursor is already cached — just resend a CursorChanged.
+            debug!("Cursor returning from edge — force resending current cursor");
+            let last_id = LAST_CURSOR_ID.lock().unwrap().clone();
+            if let Some(cursor_id) = last_id {
+                return Ok(Some(CursorEvent::CursorChanged(cursor_id)));
+            }
+            // If no cached id, fall through to full capture below
         }
 
         // New cursor handle
