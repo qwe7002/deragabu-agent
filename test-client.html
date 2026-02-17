@@ -417,7 +417,7 @@
     <h1><span>Deragabu</span> Agent — Cursor Test Client</h1>
     <div class="connection-controls">
         <label for="ws-url">Server:</label>
-        <input type="text" id="ws-url" value="ws://127.0.0.1:9000" />
+        <input type="text" id="ws-url" value="http://127.0.0.1:9000" />
         <button class="btn btn-connect" id="btn-connect" onclick="connect()">Connect</button>
         <button class="btn btn-disconnect" id="btn-disconnect" onclick="disconnect()" style="display:none;">Disconnect</button>
         <div class="status-badge">
@@ -665,7 +665,8 @@ function decodeCursorMessage(arrayBuffer) {
 
 // ─── Application State ─────────────────────────────────────────────────────
 
-let ws = null;
+let pc = null;  // RTCPeerConnection
+let dc = null;  // RTCDataChannel
 let stats = { messages: 0, data: 0, signals: 0, bytes: 0 };
 let cursorCache = {}; // cursor_id -> { blobUrl, width, height, hotspot_x, hotspot_y, is_animated }
 let activeCursorId = null;
@@ -697,47 +698,101 @@ function connect() {
     const url = $wsUrl.value.trim();
     if (!url) return;
 
-    setStatus('connecting', 'Connecting...');
-    log('info', `Connecting to ${url}...`);
+    setStatus('connecting', 'Connecting via WebRTC...');
+    log('info', `Connecting to ${url} via WebRTC...`);
 
     try {
-        ws = new WebSocket(url);
-        ws.binaryType = 'arraybuffer';
+        pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
 
-        ws.onopen = () => {
-            setStatus('connected', 'Connected');
+        pc.onconnectionstatechange = () => {
+            log('info', `Connection state: ${pc.connectionState}`);
+            if (pc.connectionState === 'connected') {
+                setStatus('connected', 'Connected');
+            } else if (pc.connectionState === 'disconnected' ||
+                       pc.connectionState === 'failed' ||
+                       pc.connectionState === 'closed') {
+                setStatus('', 'Disconnected');
+                $btnConnect.style.display = '';
+                $btnDisconnect.style.display = 'none';
+            }
+        };
+
+        dc = pc.createDataChannel('cursor', { ordered: true });
+        dc.binaryType = 'arraybuffer';
+
+        dc.onopen = () => {
+            log('info', 'DataChannel open');
             $btnConnect.style.display = 'none';
             $btnDisconnect.style.display = '';
-            log('info', 'WebSocket connected');
 
-            // Send DPR to server
+            // Send DPR config
             const dpr = window.devicePixelRatio || 1;
-            const config = JSON.stringify({ device_pixel_ratio: dpr });
-            ws.send(config);
+            dc.send(JSON.stringify({ device_pixel_ratio: dpr }));
             document.getElementById('stat-dpr').textContent = dpr.toFixed(2);
             log('info', `Sent device_pixel_ratio: ${dpr}`);
         };
 
-        ws.onmessage = (event) => {
+        dc.onmessage = (event) => {
             if (event.data instanceof ArrayBuffer) {
                 handleBinaryMessage(event.data);
-            } else {
-                log('info', `Text message: ${event.data}`);
             }
         };
 
-        ws.onerror = (event) => {
-            setStatus('error', 'Error');
-            log('error', 'WebSocket error occurred');
-        };
-
-        ws.onclose = (event) => {
+        dc.onclose = () => {
+            log('info', 'DataChannel closed');
             setStatus('', 'Disconnected');
             $btnConnect.style.display = '';
             $btnDisconnect.style.display = 'none';
-            log('info', `Disconnected (code: ${event.code})`);
-            ws = null;
         };
+
+        // Create SDP offer and exchange via HTTP signaling
+        pc.createOffer()
+            .then(offer => pc.setLocalDescription(offer))
+            .then(() => {
+                // Wait for ICE gathering to complete
+                return new Promise(resolve => {
+                    if (pc.iceGatheringState === 'complete') {
+                        resolve();
+                    } else {
+                        const check = () => {
+                            if (pc.iceGatheringState === 'complete') {
+                                pc.removeEventListener('icegatheringstatechange', check);
+                                resolve();
+                            }
+                        };
+                        pc.addEventListener('icegatheringstatechange', check);
+                    }
+                });
+            })
+            .then(() => {
+                log('info', 'ICE gathering complete, sending offer...');
+                return fetch(url + '/offer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sdp: pc.localDescription.sdp,
+                        type: pc.localDescription.type,
+                    }),
+                });
+            })
+            .then(resp => {
+                if (!resp.ok) throw new Error(`Signaling failed: ${resp.status}`);
+                return resp.json();
+            })
+            .then(answer => {
+                log('info', 'Received SDP answer');
+                return pc.setRemoteDescription(new RTCSessionDescription(answer));
+            })
+            .then(() => {
+                log('info', 'WebRTC signaling complete');
+            })
+            .catch(err => {
+                setStatus('error', 'Error');
+                log('error', `Connection failed: ${err.message}`);
+                if (pc) { pc.close(); pc = null; dc = null; }
+            });
     } catch (e) {
         setStatus('error', 'Error');
         log('error', `Connection failed: ${e.message}`);
@@ -745,10 +800,11 @@ function connect() {
 }
 
 function disconnect() {
-    if (ws) {
-        ws.close();
-        ws = null;
-    }
+    if (dc) { dc.close(); dc = null; }
+    if (pc) { pc.close(); pc = null; }
+    setStatus('', 'Disconnected');
+    $btnConnect.style.display = '';
+    $btnDisconnect.style.display = 'none';
 }
 
 // ─── Message Handling ───────────────────────────────────────────────────────
@@ -984,8 +1040,8 @@ window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
     .addEventListener('change', () => {
         const dpr = window.devicePixelRatio || 1;
         document.getElementById('stat-dpr').textContent = dpr.toFixed(2);
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ device_pixel_ratio: dpr }));
+        if (dc && dc.readyState === 'open') {
+            dc.send(JSON.stringify({ device_pixel_ratio: dpr }));
             log('info', `DPR changed, sent new value: ${dpr}`);
         }
     });

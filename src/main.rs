@@ -1,5 +1,5 @@
 mod cursor_capture;
-mod websocket_server;
+mod webrtc_server;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -17,14 +17,14 @@ async fn main() -> Result<()> {
 
     info!("Deragabu Agent starting...");
 
-    // Create channel for passing cursor events (lightweight, per-client scaling done in WS handler)
+    // Create channel for passing cursor events
     let (tx, rx) = mpsc::channel::<cursor_capture::CursorEvent>(32);
 
-    // WebSocket server bind address
+    // Server bind address
     let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:9000".to_string());
 
-    // Start WebSocket server task (sends cursor data to clients)
-    let ws_handle = tokio::spawn(websocket_server::run_websocket_server(bind_addr, rx));
+    // Start WebRTC signaling + data channel server
+    let rtc_handle = tokio::spawn(webrtc_server::run_webrtc_server(bind_addr, rx));
 
     // Start cursor capture task
     let capture_handle = tokio::spawn(async move {
@@ -35,9 +35,9 @@ async fn main() -> Result<()> {
 
     // Wait for tasks to complete
     tokio::select! {
-        result = ws_handle => {
+        result = rtc_handle => {
             if let Err(e) = result {
-                error!("WebSocket task error: {}", e);
+                error!("WebRTC server task error: {}", e);
             }
         }
         result = capture_handle => {
