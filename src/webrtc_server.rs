@@ -20,7 +20,6 @@ use tracing::{debug, error, info};
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
-use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -118,10 +117,7 @@ async fn handle_offer(
     info!("Received WebRTC offer from client");
 
     let config = RTCConfiguration {
-        ice_servers: vec![RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_owned()],
-            ..Default::default()
-        }],
+        ice_servers: vec![],
         ..Default::default()
     };
 
