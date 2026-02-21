@@ -5,6 +5,9 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use axum::http::{header, StatusCode};
+use axum::response::Response;
+use axum::body::Body;
 use bytes::Bytes;
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -15,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::time::{interval, Duration};
 use tower_http::cors::CorsLayer;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
@@ -26,12 +29,15 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 
 use crate::cursor::{
-    cursor_message::Payload, CursorMessage, CursorSignal, MessageType,
+    cursor_message::Payload, ClipboardContentType, ClipboardData, CursorMessage, CursorSignal,
+    MessageType,
 };
 use crate::cursor_capture::{
-    CursorEvent, create_hide_message, create_scaled_cursor_message,
-    get_cached_cursor, get_last_cursor_id,
+    create_hide_message, create_scaled_cursor_message, get_cached_cursor, get_last_cursor_id,
+    CursorEvent,
 };
+use crate::clipboard_sync::{apply_to_clipboard, ClipboardContent, ClipboardEvent};
+use crate::AgentEvent;
 
 #[derive(Deserialize)]
 struct OfferRequest {
@@ -49,7 +55,7 @@ struct AnswerResponse {
 }
 
 struct AppState {
-    tx_broadcast: Arc<broadcast::Sender<CursorEvent>>,
+    tx_broadcast: Arc<broadcast::Sender<AgentEvent>>,
     api: webrtc::api::API,
     /// Keep peer connections alive
     _peer_connections: Mutex<Vec<Arc<RTCPeerConnection>>>,
@@ -59,14 +65,16 @@ struct AppState {
 struct ClientState {
     dpr: f32,
     sent_cursor_ids: HashSet<String>,
+    /// blake3 hash of the last clipboard payload sent to this client (dedup)
+    last_clipboard_hash: Option<String>,
 }
 
 /// Run WebRTC signaling + data channel server
 pub async fn run_webrtc_server(
     bind_addr: String,
-    mut rx: mpsc::Receiver<CursorEvent>,
+    mut rx: mpsc::Receiver<AgentEvent>,
 ) -> Result<()> {
-    let (tx_broadcast, _) = broadcast::channel::<CursorEvent>(100);
+    let (tx_broadcast, _) = broadcast::channel::<AgentEvent>(100);
     let tx_broadcast = Arc::new(tx_broadcast);
 
     // Create WebRTC API (data-channel-only, no media codecs needed)
@@ -92,6 +100,7 @@ pub async fn run_webrtc_server(
     // HTTP signaling server with CORS
     let app = Router::new()
         .route("/", get(serve_test_page))
+        .route("/proto", get(serve_proto))
         .route("/offer", post(handle_offer))
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -107,6 +116,15 @@ pub async fn run_webrtc_server(
 /// Serve built-in test client page
 async fn serve_test_page() -> Html<&'static str> {
     Html(include_str!("../test-client.html"))
+}
+
+/// Serve the raw Protobuf schema (single source of truth, consumed by the JS client)
+async fn serve_proto() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Body::from(include_str!("../proto/cursor.proto")))
+        .unwrap()
 }
 
 /// Handle SDP offer from client, create peer connection, return SDP answer
@@ -159,6 +177,7 @@ async fn handle_offer(
             let client_state = Arc::new(Mutex::new(ClientState {
                 dpr: 1.0,
                 sent_cursor_ids: HashSet::new(),
+                last_clipboard_hash: None,
             }));
 
             // On open: start sending cursor events
@@ -181,7 +200,13 @@ async fn handle_offer(
                                     match result {
                                         Ok(event) => {
                                             let mut cs = client_state.lock().await;
-                                            if send_cursor_event(&dc, &mut cs, &event).await.is_err() {
+                                            let err = match &event {
+                                                AgentEvent::Cursor(ev) =>
+                                                    send_cursor_event(&dc, &mut cs, ev).await,
+                                                AgentEvent::Clipboard(ev) =>
+                                                    send_clipboard_event(&dc, &mut cs, ev).await,
+                                            };
+                                            if err.is_err() {
                                                 break;
                                             }
                                         }
@@ -244,6 +269,15 @@ async fn handle_offer(
                                             state.sent_cursor_ids.insert(id);
                                         }
                                     }
+                                }
+                            }
+                        }
+                    } else {
+                        // Binary message: attempt to decode as a clipboard push from the client.
+                        if let Ok(clip_msg) = CursorMessage::decode(msg.data.as_ref()) {
+                            if clip_msg.r#type == MessageType::Clipboard as i32 {
+                                if let Some(Payload::ClipboardData(clip_data)) = clip_msg.payload {
+                                    handle_client_clipboard(clip_data);
                                 }
                             }
                         }
@@ -373,6 +407,107 @@ async fn send_cursor_event(
 }
 
 /// Parse device_pixel_ratio from a simple JSON string
+// ── Clipboard helpers ────────────────────────────────────────────────────────
+
+/// Send a clipboard event to a single client, deduplicating by content hash.
+async fn send_clipboard_event(
+    dc: &Arc<RTCDataChannel>,
+    state: &mut ClientState,
+    event: &ClipboardEvent,
+) -> Result<(), ()> {
+    // Skip if this client already has this clipboard content.
+    if state.last_clipboard_hash.as_deref() == Some(&event.content_hash) {
+        return Ok(());
+    }
+
+    let clip_data = build_clipboard_proto(event);
+    let msg = CursorMessage {
+        r#type: MessageType::Clipboard.into(),
+        payload: Some(Payload::ClipboardData(clip_data)),
+        timestamp: now_ms(),
+    };
+
+    let mut buf = Vec::new();
+    if let Err(e) = msg.encode(&mut buf) {
+        error!("Clipboard encode error: {}", e);
+        return Ok(());
+    }
+
+    debug!(
+        "Sending clipboard to client ({} bytes, hash prefix: {}…)",
+        buf.len(),
+        &event.content_hash[..8]
+    );
+
+    if let Err(e) = dc.send(&Bytes::from(buf)).await {
+        error!("DC send error (clipboard): {}", e);
+        return Err(());
+    }
+
+    state.last_clipboard_hash = Some(event.content_hash.clone());
+    Ok(())
+}
+
+/// Build a [`ClipboardData`] protobuf message from a [`ClipboardEvent`].
+fn build_clipboard_proto(event: &ClipboardEvent) -> ClipboardData {
+    match &event.content {
+        ClipboardContent::Text(text) => ClipboardData {
+            content_type: ClipboardContentType::Text.into(),
+            payload: text.as_bytes().to_vec(),
+            content_hash: event.content_hash.clone(),
+            filenames: vec![],
+            file_sizes: vec![],
+        },
+        ClipboardContent::Image { png_data, .. } => ClipboardData {
+            content_type: ClipboardContentType::Image.into(),
+            payload: png_data.clone(),
+            content_hash: event.content_hash.clone(),
+            filenames: vec![],
+            file_sizes: vec![],
+        },
+        ClipboardContent::Files(names) => ClipboardData {
+            content_type: ClipboardContentType::Files.into(),
+            payload: vec![],
+            content_hash: event.content_hash.clone(),
+            filenames: names.clone(),
+            file_sizes: vec![],
+        },
+    }
+}
+
+/// Apply clipboard data received from a client to the host clipboard.
+fn handle_client_clipboard(clip_data: ClipboardData) {
+    let content_type = clip_data.content_type;
+    let hash = clip_data.content_hash.clone();
+
+    let content = if content_type == ClipboardContentType::Text as i32 {
+        match String::from_utf8(clip_data.payload) {
+            Ok(text) => ClipboardContent::Text(text),
+            Err(e) => {
+                error!("Invalid UTF-8 in clipboard text from client: {}", e);
+                return;
+            }
+        }
+    } else if content_type == ClipboardContentType::Image as i32 {
+        ClipboardContent::Image {
+            png_data: clip_data.payload,
+            width: 0,  // derived from PNG header inside apply_to_clipboard
+            height: 0,
+        }
+    } else if content_type == ClipboardContentType::Files as i32 {
+        ClipboardContent::Files(clip_data.filenames)
+    } else {
+        warn!("Received unknown clipboard content type: {}", content_type);
+        return;
+    };
+
+    if let Err(e) = apply_to_clipboard(&content, &hash) {
+        error!("Failed to apply client clipboard to host: {}", e);
+    }
+}
+
+// ── JSON / misc helpers ───────────────────────────────────────────────────────
+
 fn parse_dpr_from_json(json: &str) -> Option<f32> {
     let key = "device_pixel_ratio";
     let pos = json.find(key)?;

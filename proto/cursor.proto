@@ -7,8 +7,9 @@ message CursorMessage {
     MessageType type = 1;
 
     oneof payload {
-        CursorData cursor_data = 2;      // Cursor image data (sent once per cursor, cached by client)
-        CursorSignal cursor_signal = 3;  // Cursor switch signal (sent on change)
+        CursorData cursor_data = 2;          // Cursor image data (sent once per cursor, cached by client)
+        CursorSignal cursor_signal = 3;      // Cursor switch signal (sent on change)
+        ClipboardData clipboard_data = 5;    // Clipboard sync payload (bidirectional)
     }
 
     uint64 timestamp = 4;
@@ -32,11 +33,30 @@ message CursorSignal {
     string cursor_id = 1;           // Reference to cached cursor image
 }
 
+// Clipboard sync data - sent server→client on host clipboard change,
+// or client→server to push browser clipboard to host.
+message ClipboardData {
+    ClipboardContentType content_type = 1;  // Type of clipboard content
+    bytes payload = 2;                      // UTF-8 text bytes, or raw PNG bytes for images
+    string content_hash = 3;               // blake3 hex hash for deduplication
+    repeated string filenames = 4;         // File names (stub: for FILES type, payload is empty)
+    repeated uint64 file_sizes = 5;        // Corresponding file sizes in bytes (stub)
+}
+
+// Type of clipboard content
+enum ClipboardContentType {
+    CLIPBOARD_CONTENT_TYPE_UNSPECIFIED = 0;
+    CLIPBOARD_CONTENT_TYPE_TEXT = 1;    // payload = UTF-8 text
+    CLIPBOARD_CONTENT_TYPE_IMAGE = 2;   // payload = raw PNG bytes (uncompressed, original format)
+    CLIPBOARD_CONTENT_TYPE_FILES = 3;   // payload empty; filenames/file_sizes populated (stub)
+}
+
 enum MessageType {
     MESSAGE_TYPE_UNSPECIFIED = 0;
     MESSAGE_TYPE_CURSOR_DATA = 1;    // New cursor image (client should cache)
     MESSAGE_TYPE_CURSOR_SIGNAL = 2;  // Switch to cached cursor
     MESSAGE_TYPE_CURSOR_HIDE = 3;    // Cursor hidden
     MESSAGE_TYPE_HEARTBEAT = 4;      // Heartbeat
+    MESSAGE_TYPE_CLIPBOARD = 5;      // Clipboard sync (bidirectional)
 }
 

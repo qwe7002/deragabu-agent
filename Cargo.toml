@@ -34,8 +34,14 @@ webp = "0.3"
 # Animated WebP encoding
 webp-animation = "0.9"
 
-# Hashing for cursor ID
+# Hashing for cursor ID and clipboard dedup
 blake3 = "1"
+
+# Clipboard access (cross-platform)
+arboard = "3"
+
+# PNG encoding/decoding for clipboard images
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # ─── Platform-specific dependencies ─────────────────────────────────────────
 

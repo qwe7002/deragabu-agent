@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Deragabu Agent - 光标测试工具</title>
+    <title>Deragabu Agent - 测试工具</title>
     <style>
         * {
             margin: 0;
@@ -203,7 +203,7 @@
 
         .scale-controls {
             display: flex;
-            align-items: center;
+            align-items: cen
             gap: 10px;
         }
 
@@ -606,13 +606,89 @@
         .anim-stat .stat-value {
             font-size: 20px;
         }
+
+        /* 剪貼板同步面板 */
+        .clipboard-panel {
+            background: #f0f4ff;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+            border: 2px solid #d0d8ff;
+        }
+
+        .clipboard-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .clipboard-header h2 { color: #333; font-size: 20px; }
+
+        .clipboard-controls {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+
+        .clipboard-preview {
+            background: white;
+            border: 2px solid #dee2e6;
+            border-radius: 8px;
+            padding: 16px;
+            min-height: 80px;
+            font-family: monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            color: #333;
+            margin-bottom: 16px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .clipboard-preview img {
+            max-width: 100%;
+            max-height: 160px;
+            border-radius: 4px;
+        }
+
+        .clipboard-meta {
+            font-size: 12px;
+            color: #888;
+            margin-top: 8px;
+        }
+
+        .clipboard-direction {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .dir-from-host { background: #d1ecf1; color: #0c5460; }
+        .dir-from-client { background: #d4edda; color: #155724; }
+
+        .file-notice {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-size: 13px;
+            color: #856404;
+            margin-top: 8px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🖱️ Deragabu Agent - 光标测试工具</h1>
-            <p>高清晰度光标捕获与实时传输</p>
+            <h1>🖱️ Deragabu Agent</h1>
+            <p>高清晰度光标捕获 · 剪貼板同步</p>
         </div>
 
         <div class="content">
@@ -626,7 +702,7 @@
                 </div>
 
                 <div class="controls">
-                    <input type="text" id="wsUrl" value="ws://127.0.0.1:9000" placeholder="ws://host:port">
+                    <input type="text" id="wsUrl" value="http://127.0.0.1:9000" placeholder="http://host:port">
                     <button id="connectBtn" class="btn-primary" onclick="connect()">连接</button>
                     <button id="disconnectBtn" class="btn-danger" onclick="disconnect()" disabled>断开</button>
                     <button class="btn-secondary" onclick="clearLog()">清除日志</button>
@@ -785,6 +861,58 @@
                 </div>
             </div>
 
+            <!-- 剪貼板同步 -->
+            <div class="clipboard-panel">
+                <div class="clipboard-header">
+                    <h2>📋 剪貼板同步</h2>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <label style="font-size:13px;font-weight:600;cursor:pointer;">
+                            <input type="checkbox" id="clipAutoSync" onchange="toggleClipAutoSync()"> 自動同步
+                        </label>
+                    </div>
+                </div>
+
+                <div class="clipboard-controls">
+                    <button class="btn-primary" onclick="pushClipboardToHost()">⬆️ 推送到主機</button>
+                    <button class="btn-secondary" onclick="clearClipboardPreview()">🗑 清除預覽</button>
+                </div>
+
+                <!-- Last received from host -->
+                <div style="margin-bottom:12px;">
+                    <div style="font-size:12px;font-weight:600;color:#6c757d;text-transform:uppercase;margin-bottom:6px;">
+                        最後收到（主機 → 客戶端）
+                        <span id="clipFromHostDir" class="clipboard-direction dir-from-host" style="display:none;">⬇️ 主機</span>
+                    </div>
+                    <div class="clipboard-preview" id="clipFromHostPreview">
+                        <span style="color:#aaa;">等待主機剪貼板數據…</span>
+                    </div>
+                    <div class="clipboard-meta" id="clipFromHostMeta"></div>
+                </div>
+
+                <!-- File transfer notice (stub) -->
+                <div class="file-notice" id="clipFileNotice" style="display:none;">
+                    📁 <strong>文件傳輸尚未實現</strong> —
+                    文件名稱: <span id="clipFileNames"></span>。
+                    未來版本將支持分塊傳輸。
+                </div>
+
+                <!-- Stats row -->
+                <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:10px;">
+                    <div class="stat-card" style="min-width:120px;">
+                        <div class="stat-label">已接收</div>
+                        <div class="stat-value" id="clipRecvCount">0</div>
+                    </div>
+                    <div class="stat-card" style="min-width:120px;">
+                        <div class="stat-label">已推送</div>
+                        <div class="stat-value" id="clipSentCount">0</div>
+                    </div>
+                    <div class="stat-card" style="min-width:160px;">
+                        <div class="stat-label">上次同步</div>
+                        <div class="stat-value" style="font-size:14px;" id="clipLastSync">—</div>
+                    </div>
+                </div>
+            </div>
+
             <!-- 日志 -->
             <div class="log-panel">
                 <div class="log-header">
@@ -798,7 +926,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/protobufjs@7/dist/protobuf.min.js"></script>
     <script>
-        let ws = null;
+        let pc = null;   // RTCPeerConnection
+        let dc = null;   // RTCDataChannel
         let messageCount = 0;
         let cursorUpdateCount = 0;
         let totalBytes = 0;
@@ -808,6 +937,8 @@
 
         let CursorMessage = null;
         let MessageType = null;
+        let ClipboardContentType = null;
+        let ClipboardData = null;
 
         const cursorCache = new Map();
         let cacheHits = 0;
@@ -829,19 +960,51 @@
         let animLastChangeTime = 0;
         let animFrameIntervals = [];       // 帧间隔(ms)列表
 
-        const protoDefinition = `
-syntax = "proto3";
-package cursor;
+        // 剪貼板同步
+        let clipRecvCount = 0;
+        let clipSentCount = 0;
+        let clipAutoSync = false;
+        let clipAutoSyncTimer = null;
 
+        window.addEventListener('load', async () => {
+            await initProtobuf();
+            startFPSCounter();
+            // Update auto DPR label
+            const dpr = window.devicePixelRatio || 1;
+            const autoOption = document.querySelector('#dprSelect option[value="auto"]');
+            if (autoOption) autoOption.textContent = `自动 (当前: ×${dpr})`;
+            log('✅ 测试工具已就绪', 'info');
+        });
+
+        async function initProtobuf() {
+            // Build candidate URLs: relative (works when served by agent),
+            // then absolute from the configured server address (works when
+            // opened as a local file), then a bundled fallback.
+            const serverBase = document.getElementById('wsUrl').value.trim().replace(/\/$/, '');
+            const candidates = ['/proto', `${serverBase}/proto`];
+
+            let protoText = null;
+            for (const url of candidates) {
+                try {
+                    const resp = await fetch(url);
+                    if (resp.ok) { protoText = await resp.text(); break; }
+                } catch (_) { /* try next */ }
+            }
+
+            // ── bundled fallback (mirrors proto/cursor.proto exactly) ──────────
+            if (!protoText) {
+                log('⚠️ 無法從服務器獲取 proto，使用內建定義', 'warn');
+                protoText = `syntax = "proto3";
+package cursor;
 message CursorMessage {
     MessageType type = 1;
     oneof payload {
         CursorData cursor_data = 2;
         CursorSignal cursor_signal = 3;
+        ClipboardData clipboard_data = 5;
     }
     uint64 timestamp = 4;
 }
-
 message CursorData {
     string cursor_id = 1;
     bytes image_data = 2;
@@ -853,38 +1016,42 @@ message CursorData {
     bool is_animated = 8;
     uint32 frame_delay_ms = 9;
 }
-
 message CursorSignal {
     string cursor_id = 1;
 }
-
+message ClipboardData {
+    ClipboardContentType content_type = 1;
+    bytes payload = 2;
+    string content_hash = 3;
+    repeated string filenames = 4;
+    repeated uint64 file_sizes = 5;
+}
+enum ClipboardContentType {
+    CLIPBOARD_CONTENT_TYPE_UNSPECIFIED = 0;
+    CLIPBOARD_CONTENT_TYPE_TEXT = 1;
+    CLIPBOARD_CONTENT_TYPE_IMAGE = 2;
+    CLIPBOARD_CONTENT_TYPE_FILES = 3;
+}
 enum MessageType {
     MESSAGE_TYPE_UNSPECIFIED = 0;
     MESSAGE_TYPE_CURSOR_DATA = 1;
     MESSAGE_TYPE_CURSOR_SIGNAL = 2;
     MESSAGE_TYPE_CURSOR_HIDE = 3;
     MESSAGE_TYPE_HEARTBEAT = 4;
-}
-        `;
+    MESSAGE_TYPE_CLIPBOARD = 5;
+}`;
+            }
+            // ─────────────────────────────────────────────────────────────────
 
-        window.addEventListener('load', () => {
-            initProtobuf();
-            startFPSCounter();
-            // Update auto DPR label
-            const dpr = window.devicePixelRatio || 1;
-            const autoOption = document.querySelector('#dprSelect option[value="auto"]');
-            if (autoOption) autoOption.textContent = `自动 (当前: ×${dpr})`;
-            log('✅ 测试工具已就绪', 'info');
-        });
-
-        function initProtobuf() {
             try {
-                const root = protobuf.parse(protoDefinition, { keepCase: true }).root;
+                const root = protobuf.parse(protoText, { keepCase: true }).root;
                 CursorMessage = root.lookupType('cursor.CursorMessage');
                 MessageType = root.lookupEnum('cursor.MessageType').values;
-                log('✅ Protobuf 已加载', 'info');
+                ClipboardContentType = root.lookupEnum('cursor.ClipboardContentType').values;
+                ClipboardData = root.lookupType('cursor.ClipboardData');
+                log('✅ Protobuf 已加載', 'info');
             } catch (e) {
-                log('❌ Protobuf 加载失败: ' + e.message, 'error');
+                log('❌ Protobuf 解析失敗: ' + e.message, 'error');
             }
         }
 
@@ -895,56 +1062,87 @@ enum MessageType {
             }, 1000);
         }
 
-        function connect() {
+        async function connect() {
             if (!CursorMessage) {
                 log('❌ Protobuf 未初始化', 'error');
                 return;
             }
 
-            const url = document.getElementById('wsUrl').value.trim();
-            log(`🔌 连接中: ${url}...`, 'info');
+            const baseUrl = document.getElementById('wsUrl').value.trim().replace(/\/$/, '');
+            log(`🔌 建立 WebRTC 連接: ${baseUrl}…`, 'info');
             updateStatus('connecting');
+            document.getElementById('connectBtn').disabled = true;
 
             try {
-                ws = new WebSocket(url);
-                ws.binaryType = 'arraybuffer';
+                pc = new RTCPeerConnection({ iceServers: [] });
 
-                ws.onopen = () => {
-                    log('✅ 已连接', 'info');
+                // Create DataChannel (client is the offerer, so it creates the channel)
+                dc = pc.createDataChannel('deragabu');
+                dc.binaryType = 'arraybuffer';
+
+                dc.onopen = () => {
+                    log('✅ DataChannel 已開啟', 'info');
                     updateStatus('connected');
-                    document.getElementById('connectBtn').disabled = true;
                     document.getElementById('disconnectBtn').disabled = false;
 
-                    // Send client's device pixel ratio to server for per-client scaling
+                    // Send client DPR
                     const dpr = window.devicePixelRatio || 1;
                     const config = JSON.stringify({ device_pixel_ratio: dpr });
-                    ws.send(config);
-                    log(`📐 发送 DPR: ${dpr}`, 'info');
+                    dc.send(config);
+                    log(`📐 發送 DPR: ${dpr}`, 'info');
                 };
 
-                ws.onclose = () => {
-                    log('⚠️ 连接已关闭', 'warn');
+                dc.onclose = () => {
+                    log('⚠️ DataChannel 已關閉', 'warn');
                     updateStatus('disconnected');
                     document.getElementById('connectBtn').disabled = false;
                     document.getElementById('disconnectBtn').disabled = true;
                 };
 
-                ws.onerror = () => {
-                    log('❌ 连接错误', 'error');
+                dc.onerror = (e) => {
+                    log('❌ DataChannel 錯誤: ' + (e.message || ''), 'error');
                 };
 
-                ws.onmessage = handleMessage;
+                dc.onmessage = handleMessage;
+
+                // Create offer
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                // Wait for ICE gathering (with 3s timeout)
+                await new Promise(resolve => {
+                    if (pc.iceGatheringState === 'complete') { resolve(); return; }
+                    const check = () => { if (pc.iceGatheringState === 'complete') resolve(); };
+                    pc.addEventListener('icegatheringstatechange', check);
+                    setTimeout(resolve, 3000);
+                });
+
+                const resp = await fetch(`${baseUrl}/offer`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sdp: pc.localDescription.sdp, type: 'offer' })
+                });
+
+                if (!resp.ok) {
+                    throw new Error(`Offer rejected: ${resp.status} ${resp.statusText}`);
+                }
+
+                const answer = await resp.json();
+                await pc.setRemoteDescription(new RTCSessionDescription(answer));
+                log('🤝 SDP 交換完成，等待 DataChannel…', 'info');
+
             } catch (e) {
-                log('❌ 连接失败: ' + e.message, 'error');
+                log('❌ 連接失敗: ' + e.message, 'error');
                 updateStatus('disconnected');
+                document.getElementById('connectBtn').disabled = false;
+                if (pc) { pc.close(); pc = null; dc = null; }
             }
         }
 
         function disconnect() {
-            if (ws) {
-                ws.close();
-                ws = null;
-            }
+            if (dc) { dc.close(); dc = null; }
+            if (pc) { pc.close(); pc = null; }
+            stopClipAutoSync();
         }
 
         function handleMessage(event) {
@@ -1031,6 +1229,8 @@ enum MessageType {
                 hideCursor();
             } else if (message.type === 4) { // HEARTBEAT
                 log('💓 心跳', 'info');
+            } else if (message.type === 5) { // CLIPBOARD
+                handleClipboardMessage(message);
             }
         }
 
@@ -1134,9 +1334,9 @@ enum MessageType {
             } else {
                 dpr = parseFloat(select.value);
             }
-            if (ws && ws.readyState === WebSocket.OPEN) {
+            if (dc && dc.readyState === 'open') {
                 const config = JSON.stringify({ device_pixel_ratio: dpr });
-                ws.send(config);
+                dc.send(config);
                 log(`📐 更新 DPR: ${dpr}`, 'info');
             } else {
                 log('⚠️ 未连接，无法更新 DPR', 'warn');
@@ -1185,7 +1385,175 @@ enum MessageType {
             document.getElementById('log').innerHTML = '';
         }
 
-        // ========== 动画光标功能 ==========
+        // ========== 剪貼板同步功能 ==========
+
+        function handleClipboardMessage(message) {
+            const clip = message.clipboard_data;
+            if (!clip) { log('⚠️ CLIPBOARD 消息缺少 clipboard_data', 'warn'); return; }
+
+            clipRecvCount++;
+            document.getElementById('clipRecvCount').textContent = clipRecvCount;
+            document.getElementById('clipLastSync').textContent = new Date().toLocaleTimeString();
+
+            const previewEl = document.getElementById('clipFromHostPreview');
+            const metaEl   = document.getElementById('clipFromHostMeta');
+            const dirEl    = document.getElementById('clipFromHostDir');
+            dirEl.style.display = 'inline-flex';
+
+            const ct = clip.content_type; // numeric from protobufjs
+
+            // CLIPBOARD_CONTENT_TYPE_TEXT = 1
+            if (ct === 1) {
+                const text = new TextDecoder().decode(clip.payload);
+                previewEl.textContent = text;
+                metaEl.textContent = `文本 · ${text.length} 字符 · hash: ${clip.content_hash.substring(0, 8)}…`;
+                log(`📋 收到文本剪貼板 (${text.length} 字符)`, 'info');
+
+                // Write to browser clipboard (requires secure context + user gesture previously granted)
+                navigator.clipboard.writeText(text).catch(() => {});
+
+            // CLIPBOARD_CONTENT_TYPE_IMAGE = 2
+            } else if (ct === 2) {
+                const blob = new Blob([clip.payload], { type: 'image/png' });
+                const url  = URL.createObjectURL(blob);
+                previewEl.innerHTML = `<img src="${url}" onload="URL.revokeObjectURL('${url}')">`;
+                const kb = (clip.payload.length / 1024).toFixed(1);
+                metaEl.textContent = `圖片 PNG · ${kb} KB · hash: ${clip.content_hash.substring(0, 8)}…`;
+                log(`🖼️ 收到圖片剪貼板 (${kb} KB)`, 'info');
+
+                // Write PNG to browser clipboard via ClipboardItem
+                if (window.ClipboardItem) {
+                    const cbBlob = new Blob([clip.payload], { type: 'image/png' });
+                    navigator.clipboard.write([new ClipboardItem({ 'image/png': cbBlob })]).catch(() => {});
+                }
+
+            // CLIPBOARD_CONTENT_TYPE_FILES = 3
+            } else if (ct === 3) {
+                const names = clip.filenames || [];
+                previewEl.innerHTML = `<span style="color:#888;">[文件列表 — 傳輸尚未實現]</span>`;
+                metaEl.textContent = `${names.length} 個文件`;
+                document.getElementById('clipFileNotice').style.display = 'block';
+                document.getElementById('clipFileNames').textContent = names.join(', ') || '(空)';
+                log(`📁 收到文件剪貼板 (${names.length} 個文件) — 傳輸未實現`, 'warn');
+            }
+        }
+
+        /** 將瀏覽器當前剪貼板推送到主機（需要 HTTPS 或 localhost）*/
+        async function pushClipboardToHost() {
+            if (!dc || dc.readyState !== 'open') {
+                log('⚠️ 未連接，無法推送剪貼板', 'warn');
+                return;
+            }
+            if (!CursorMessage || !ClipboardData) {
+                log('❌ Protobuf 未初始化', 'error');
+                return;
+            }
+
+            try {
+                // Try reading clipboard items (image first, then text)
+                let sent = false;
+
+                if (window.ClipboardItem) {
+                    try {
+                        const items = await navigator.clipboard.read();
+                        for (const item of items) {
+                            if (item.types.includes('image/png')) {
+                                const blob   = await item.getType('image/png');
+                                const arrBuf = await blob.arrayBuffer();
+                                const bytes  = new Uint8Array(arrBuf);
+                                const hash   = await sha256hex(bytes);
+                                sendClipboardProto(2 /* IMAGE */, bytes, hash, [], []);
+                                sent = true;
+                                clipSentCount++;
+                                document.getElementById('clipSentCount').textContent = clipSentCount;
+                                document.getElementById('clipLastSync').textContent = new Date().toLocaleTimeString();
+                                log(`⬆️ 推送圖片到主機 (${(bytes.length/1024).toFixed(1)} KB)`, 'info');
+                                break;
+                            }
+                        }
+                    } catch (_) { /* read() may fail without HTTPS */ }
+                }
+
+                if (!sent) {
+                    const text = await navigator.clipboard.readText();
+                    if (text) {
+                        const bytes = new TextEncoder().encode(text);
+                        const hash  = await sha256hex(bytes);
+                        sendClipboardProto(1 /* TEXT */, bytes, hash, [], []);
+                        clipSentCount++;
+                        document.getElementById('clipSentCount').textContent = clipSentCount;
+                        document.getElementById('clipLastSync').textContent = new Date().toLocaleTimeString();
+                        log(`⬆️ 推送文本到主機 (${text.length} 字符)`, 'info');
+                    } else {
+                        log('⚠️ 瀏覽器剪貼板為空', 'warn');
+                    }
+                }
+            } catch (e) {
+                log('❌ 讀取瀏覽器剪貼板失敗: ' + e.message + ' (需要安全環境或用戶授權)', 'error');
+            }
+        }
+
+        /** Encode and send a ClipboardData CursorMessage over the DataChannel */
+        function sendClipboardProto(contentType, payload, hash, filenames, fileSizes) {
+            const clipData = {
+                content_type: contentType,
+                payload: payload,
+                content_hash: hash,
+                filenames: filenames,
+                file_sizes: fileSizes,
+            };
+            const msg = CursorMessage.create({
+                type: 5, // MESSAGE_TYPE_CLIPBOARD
+                clipboard_data: clipData,
+                timestamp: Date.now(),
+            });
+            const buf = CursorMessage.encode(msg).finish();
+            dc.send(buf);
+        }
+
+        /** Simple SHA-256 hex digest for dedup hash (mirrors blake3 on server side) */
+        async function sha256hex(bytes) {
+            const hashBuf = await crypto.subtle.digest('SHA-256', bytes);
+            return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2,'0')).join('');
+        }
+
+        function toggleClipAutoSync() {
+            clipAutoSync = document.getElementById('clipAutoSync').checked;
+            if (clipAutoSync) {
+                startClipAutoSync();
+            } else {
+                stopClipAutoSync();
+            }
+        }
+
+        function startClipAutoSync() {
+            if (clipAutoSyncTimer) return;
+            // Poll browser clipboard every 1 second when focused
+            clipAutoSyncTimer = setInterval(async () => {
+                if (!document.hasFocus()) return;
+                if (!dc || dc.readyState !== 'open') return;
+                await pushClipboardToHost();
+            }, 1000);
+            log('🔄 自動剪貼板同步已啟動 (1 秒輪詢)', 'info');
+        }
+
+        function stopClipAutoSync() {
+            if (clipAutoSyncTimer) {
+                clearInterval(clipAutoSyncTimer);
+                clipAutoSyncTimer = null;
+                log('⏹ 自動剪貼板同步已停止', 'info');
+            }
+        }
+
+        function clearClipboardPreview() {
+            document.getElementById('clipFromHostPreview').innerHTML = '<span style="color:#aaa;">等待主機剪貼板數據…</span>';
+            document.getElementById('clipFromHostMeta').textContent = '';
+            document.getElementById('clipFromHostDir').style.display = 'none';
+            document.getElementById('clipFileNotice').style.display = 'none';
+            log('🗑 剪貼板預覽已清除', 'info');
+        }
+
+        // ========== 動畫光標功能 ==========
 
         // Server-reported frame delay for animated cursors (ms)
         let serverFrameDelay = 0;
