@@ -735,6 +735,10 @@
                     <div class="stat-label">缓存数</div>
                     <div class="stat-value" id="cacheSize">0</div>
                 </div>
+                <div class="stat-card" id="drawCursorCard">
+                    <div class="stat-label">Sunshine 光标</div>
+                    <div class="stat-value" id="drawCursorStatus" style="font-size:14px;">未知</div>
+                </div>
             </div>
 
             <!-- 光标预览 -->
@@ -1002,6 +1006,7 @@ message CursorMessage {
         CursorData cursor_data = 2;
         CursorSignal cursor_signal = 3;
         ClipboardData clipboard_data = 5;
+        SettingsData settings_data = 6;
     }
     uint64 timestamp = 4;
 }
@@ -1026,6 +1031,9 @@ message ClipboardData {
     repeated string filenames = 4;
     repeated uint64 file_sizes = 5;
 }
+message SettingsData {
+    bool draw_cursor = 1;
+}
 enum ClipboardContentType {
     CLIPBOARD_CONTENT_TYPE_UNSPECIFIED = 0;
     CLIPBOARD_CONTENT_TYPE_TEXT = 1;
@@ -1039,6 +1047,7 @@ enum MessageType {
     MESSAGE_TYPE_CURSOR_HIDE = 3;
     MESSAGE_TYPE_HEARTBEAT = 4;
     MESSAGE_TYPE_CLIPBOARD = 5;
+    MESSAGE_TYPE_SETTINGS = 6;
 }`;
             }
             // ─────────────────────────────────────────────────────────────────
@@ -1231,6 +1240,8 @@ enum MessageType {
                 log('💓 心跳', 'info');
             } else if (message.type === 5) { // CLIPBOARD
                 handleClipboardMessage(message);
+            } else if (message.type === 6) { // SETTINGS
+                handleSettingsMessage(message);
             }
         }
 
@@ -1383,6 +1394,25 @@ enum MessageType {
 
         function clearLog() {
             document.getElementById('log').innerHTML = '';
+        }
+
+        // ========== Sunshine 設定處理 ==========
+
+        function handleSettingsMessage(message) {
+            const settings = message.settings_data;
+            if (!settings) { log('⚠️ SETTINGS 消息缺少 settings_data', 'warn'); return; }
+
+            const el = document.getElementById('drawCursorStatus');
+            const card = document.getElementById('drawCursorCard');
+            if (settings.draw_cursor) {
+                el.innerHTML = '<span style="color:#dc3545;">🖱️ 已繪製</span>';
+                card.style.borderColor = '#dc3545';
+                log('⚙️ Sunshine draw_cursor: 已啟用（光標已在視頻流中繪製）', 'warn');
+            } else {
+                el.innerHTML = '<span style="color:#28a745;">🚫 未繪製</span>';
+                card.style.borderColor = '#28a745';
+                log('⚙️ Sunshine draw_cursor: 已停用（光標不在視頻流中）', 'info');
+            }
         }
 
         // ========== 剪貼板同步功能 ==========

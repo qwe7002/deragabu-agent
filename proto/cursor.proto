@@ -10,6 +10,7 @@ message CursorMessage {
         CursorData cursor_data = 2;          // Cursor image data (sent once per cursor, cached by client)
         CursorSignal cursor_signal = 3;      // Cursor switch signal (sent on change)
         ClipboardData clipboard_data = 5;    // Clipboard sync payload (bidirectional)
+        SettingsData settings_data = 6;      // Server settings (draw_cursor state, etc.)
     }
 
     uint64 timestamp = 4;
@@ -58,5 +59,11 @@ enum MessageType {
     MESSAGE_TYPE_CURSOR_HIDE = 3;    // Cursor hidden
     MESSAGE_TYPE_HEARTBEAT = 4;      // Heartbeat
     MESSAGE_TYPE_CLIPBOARD = 5;      // Clipboard sync (bidirectional)
+    MESSAGE_TYPE_SETTINGS = 6;       // Server settings (draw_cursor state, etc.)
+}
+
+// Server-side settings pushed to clients
+message SettingsData {
+    bool draw_cursor = 1;              // Whether Sunshine draws cursor in the video stream
 }
 

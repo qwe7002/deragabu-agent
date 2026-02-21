@@ -30,13 +30,14 @@ use webrtc::peer_connection::RTCPeerConnection;
 
 use crate::cursor::{
     cursor_message::Payload, ClipboardContentType, ClipboardData, CursorMessage, CursorSignal,
-    MessageType,
+    MessageType, SettingsData,
 };
 use crate::cursor_capture::{
     create_hide_message, create_scaled_cursor_message, get_cached_cursor, get_last_cursor_id,
     CursorEvent,
 };
 use crate::clipboard_sync::{apply_to_clipboard, ClipboardContent, ClipboardEvent};
+use crate::sunshine_monitor::SunshineSettingsEvent;
 use crate::AgentEvent;
 
 #[derive(Deserialize)]
@@ -205,6 +206,8 @@ async fn handle_offer(
                                                     send_cursor_event(&dc, &mut cs, ev).await,
                                                 AgentEvent::Clipboard(ev) =>
                                                     send_clipboard_event(&dc, &mut cs, ev).await,
+                                                AgentEvent::Settings(ev) =>
+                                                    send_settings_event(&dc, ev).await,
                                             };
                                             if err.is_err() {
                                                 break;
@@ -504,6 +507,40 @@ fn handle_client_clipboard(clip_data: ClipboardData) {
     if let Err(e) = apply_to_clipboard(&content, &hash) {
         error!("Failed to apply client clipboard to host: {}", e);
     }
+}
+
+// ── Settings helpers ──────────────────────────────────────────────────────────
+
+/// Send a Sunshine settings event (draw_cursor state) to a client.
+async fn send_settings_event(
+    dc: &Arc<RTCDataChannel>,
+    event: &SunshineSettingsEvent,
+) -> Result<(), ()> {
+    let msg = CursorMessage {
+        r#type: MessageType::Settings.into(),
+        payload: Some(Payload::SettingsData(SettingsData {
+            draw_cursor: event.draw_cursor,
+        })),
+        timestamp: now_ms(),
+    };
+
+    let mut buf = Vec::new();
+    if let Err(e) = msg.encode(&mut buf) {
+        error!("Settings encode error: {}", e);
+        return Ok(());
+    }
+
+    debug!(
+        "Sending settings to client: draw_cursor={}",
+        event.draw_cursor
+    );
+
+    if let Err(e) = dc.send(&Bytes::from(buf)).await {
+        error!("DC send error (settings): {}", e);
+        return Err(());
+    }
+
+    Ok(())
 }
 
 // ── JSON / misc helpers ───────────────────────────────────────────────────────

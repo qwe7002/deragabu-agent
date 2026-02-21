@@ -1,5 +1,6 @@
 mod clipboard_sync;
 mod cursor_capture;
+mod sunshine_monitor;
 mod webrtc_server;
 
 use anyhow::Result;
@@ -16,6 +17,7 @@ pub mod cursor {
 pub enum AgentEvent {
     Cursor(cursor_capture::CursorEvent),
     Clipboard(clipboard_sync::ClipboardEvent),
+    Settings(sunshine_monitor::SunshineSettingsEvent),
 }
 
 #[tokio::main]
@@ -28,6 +30,8 @@ async fn main() -> Result<()> {
     // Channels feeding into the unified broadcast
     let (cursor_tx, mut cursor_rx) = mpsc::channel::<cursor_capture::CursorEvent>(32);
     let (clipboard_tx, mut clipboard_rx) = mpsc::channel::<clipboard_sync::ClipboardEvent>(32);
+    let (settings_tx, mut settings_rx) =
+        mpsc::channel::<sunshine_monitor::SunshineSettingsEvent>(8);
     let (agent_tx, agent_rx) = mpsc::channel::<AgentEvent>(64);
 
     // Forward cursor events → AgentEvent
@@ -45,6 +49,20 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         while let Some(ev) = clipboard_rx.recv().await {
             if agent_tx_clipboard.send(AgentEvent::Clipboard(ev)).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Forward sunshine settings events → AgentEvent
+    let agent_tx_settings = agent_tx.clone();
+    tokio::spawn(async move {
+        while let Some(ev) = settings_rx.recv().await {
+            if agent_tx_settings
+                .send(AgentEvent::Settings(ev))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -70,6 +88,13 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Start Sunshine monitor (detects draw_cursor state from running Sunshine process)
+    let sunshine_handle = tokio::spawn(async move {
+        if let Err(e) = sunshine_monitor::run_sunshine_monitor(settings_tx).await {
+            error!("Sunshine monitor error: {}", e);
+        }
+    });
+
     // Wait for any task to complete (any exit is treated as fatal)
     tokio::select! {
         result = rtc_handle => {
@@ -85,6 +110,11 @@ async fn main() -> Result<()> {
         result = clipboard_handle => {
             if let Err(e) = result {
                 error!("Clipboard capture task error: {}", e);
+            }
+        }
+        result = sunshine_handle => {
+            if let Err(e) = result {
+                error!("Sunshine monitor task error: {}", e);
             }
         }
     }
