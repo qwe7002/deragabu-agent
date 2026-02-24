@@ -416,13 +416,23 @@ else
     echo "WARNING: Could not find Homebrew OpenSSL. Install with: brew install openssl@3"
 fi
 
+# Build CMAKE_PREFIX_PATH including both Homebrew prefix and OpenSSL root
+# so that find_package(OpenSSL) correctly resolves headers and libraries.
+CMAKE_PREFIX="${HOMEBREW_PREFIX}"
+if [[ -n "${OPENSSL_ROOT:-}" && -d "${OPENSSL_ROOT:-}" ]]; then
+    CMAKE_PREFIX="${OPENSSL_ROOT};${CMAKE_PREFIX}"
+fi
+
 (cd "$SUNSHINE_DIR" && \
     cmake -B build -G Ninja -S . \
         -DCMAKE_BUILD_TYPE=Release \
         -DSUNSHINE_ENABLE_TRAY=OFF \
         ${MACOS_SDK:+-DCMAKE_OSX_SYSROOT="$MACOS_SDK"} \
-        -DCMAKE_PREFIX_PATH="$HOMEBREW_PREFIX" \
+        -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX" \
         ${OPENSSL_ROOT:+-DOPENSSL_ROOT_DIR="$OPENSSL_ROOT"} \
+        ${OPENSSL_ROOT:+-DOPENSSL_INCLUDE_DIR="$OPENSSL_ROOT/include"} \
+        ${OPENSSL_ROOT:+-DOPENSSL_CRYPTO_LIBRARY="$OPENSSL_ROOT/lib/libcrypto.dylib"} \
+        ${OPENSSL_ROOT:+-DOPENSSL_SSL_LIBRARY="$OPENSSL_ROOT/lib/libssl.dylib"} \
         2>&1 | tail -20
 )
 
