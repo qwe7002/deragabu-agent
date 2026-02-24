@@ -402,11 +402,18 @@ if [[ -z "$MACOS_SDK" ]]; then
     echo "  xcode-select --install"
 fi
 
+# Resolve Homebrew OpenSSL path — macOS does not ship OpenSSL headers.
+OPENSSL_ROOT="$(brew --prefix openssl@3 2>/dev/null || brew --prefix openssl 2>/dev/null || echo "")"
+if [[ -z "$OPENSSL_ROOT" || ! -d "$OPENSSL_ROOT" ]]; then
+    echo "WARNING: Could not find Homebrew OpenSSL. Install with: brew install openssl@3"
+fi
+
 (cd "$SUNSHINE_DIR" && \
     cmake -B build -G Ninja -S . \
         -DCMAKE_BUILD_TYPE=Release \
         -DSUNSHINE_ENABLE_TRAY=OFF \
         ${MACOS_SDK:+-DCMAKE_OSX_SYSROOT="$MACOS_SDK"} \
+        ${OPENSSL_ROOT:+-DOPENSSL_ROOT_DIR="$OPENSSL_ROOT"} \
         2>&1 | tail -20
 )
 
