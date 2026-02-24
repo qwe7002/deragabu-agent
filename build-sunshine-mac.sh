@@ -356,7 +356,10 @@ if(APPLE)
     )
 
     # Link agent + system frameworks it depends on
-    target_link_libraries(sunshine PRIVATE
+    # NOTE: Sunshine uses the plain signature of target_link_libraries in
+    # cmake/targets/common.cmake, so we must also use the plain form here
+    # (mixing plain and keyword signatures on the same target is a CMake error).
+    target_link_libraries(sunshine
       deragabu_agent
       "-framework CoreGraphics"
       "-framework CoreFoundation"
