@@ -5,7 +5,11 @@ use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, MAX_PATH};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, LUID, MAX_PATH};
+use windows::Win32::Security::{
+    AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES,
+    SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+};
 use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
@@ -14,7 +18,8 @@ use windows::Win32::System::ProcessStatus::{
     EnumProcessModulesEx, GetModuleFileNameExW, LIST_MODULES_ALL,
 };
 use windows::Win32::System::Threading::{
-    OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
+    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_INFORMATION,
+    PROCESS_VM_READ,
 };
 
 use super::SunshineSettingsEvent;
@@ -32,7 +37,7 @@ const DEBUGINFO_URL_TEMPLATE: &str =
 const DEFAULT_VERSION: &str = "2025.924.154138";
 
 /// How often (ms) to poll the running Sunshine process for `display_cursor`.
-const POLL_INTERVAL_MS: u64 = 2000;
+const POLL_INTERVAL_MS: u64 = 100;
 
 /// How long to wait (seconds) before retrying when Sunshine is not found.
 const RETRY_INTERVAL_SECS: u64 = 5;
@@ -48,6 +53,52 @@ impl Drop for SafeHandle {
     }
 }
 
+// ── Privilege escalation ───────────────────────────────────────────────────────
+
+/// Enable `SeDebugPrivilege` for the current process.
+///
+/// This is required to call `OpenProcess` / `ReadProcessMemory` on processes
+/// running under a different (higher-privilege) account, such as the
+/// Sunshine service (`sunshinesvc`).
+fn enable_debug_privilege() -> Result<()> {
+    unsafe {
+        let mut token = HANDLE::default();
+        OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &mut token,
+        )
+        .context("OpenProcessToken failed")?;
+        let _guard = SafeHandle(token);
+
+        let priv_name: Vec<u16> = "SeDebugPrivilege"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut luid = LUID::default();
+        LookupPrivilegeValueW(
+            None,
+            windows::core::PCWSTR(priv_name.as_ptr()),
+            &mut luid,
+        )
+        .context("LookupPrivilegeValueW failed")?;
+
+        let mut tp = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+
+        AdjustTokenPrivileges(token, false, Some(&mut tp), 0, None, None)
+            .context("AdjustTokenPrivileges failed")?;
+
+        Ok(())
+    }
+}
+
 // ── Process discovery ──────────────────────────────────────────────────────────
 
 /// Information about the running Sunshine process.
@@ -58,7 +109,16 @@ struct SunshineProcess {
 }
 
 /// Find the running Sunshine process, returning its PID, path, and module base.
+///
+/// Automatically attempts to enable `SeDebugPrivilege` so that the agent can
+/// read the Sunshine service process even when it runs under SYSTEM.
 fn find_sunshine_process() -> Result<Option<SunshineProcess>> {
+    // Try to elevate – non-fatal if it fails (we might already be admin, or
+    // we'll get a clear error from OpenProcess below).
+    if let Err(e) = enable_debug_privilege() {
+        debug!("Could not enable SeDebugPrivilege (non-fatal): {}", e);
+    }
+
     unsafe {
         // Snapshot all processes
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
@@ -295,23 +355,23 @@ fn query_version_string(version_info: &[u8]) -> Result<String> {
 
 // ── PDB download & parsing ─────────────────────────────────────────────────────
 
-/// Directory where extracted PDB files are cached.
-fn pdb_cache_dir() -> PathBuf {
+/// Directory where extracted debug files are cached.
+fn dbg_cache_dir() -> PathBuf {
     std::env::temp_dir()
         .join("deragabu-agent")
-        .join("sunshine-pdb")
+        .join("sunshine-dbg")
 }
 
-/// Download the debuginfo archive and parse the PDB for the `display_cursor`
+/// Download the debuginfo archive and parse the `.dbg` file for the `display_cursor`
 /// symbol, returning its RVA (Relative Virtual Address).
-async fn download_and_parse_pdb(version: &str) -> Result<u32> {
-    let cache = pdb_cache_dir();
-    let pdb_path = cache.join(format!("sunshine-v{}.pdb", version));
+async fn download_and_parse_dbg(version: &str) -> Result<u32> {
+    let cache = dbg_cache_dir();
+    let dbg_path = cache.join(format!("sunshine-v{}.dbg", version));
 
-    // If PDB is already cached, just parse it
-    if pdb_path.exists() {
-        info!("Using cached PDB: {:?}", pdb_path);
-        return find_display_cursor_rva(&pdb_path);
+    // If .dbg is already cached, just parse it
+    if dbg_path.exists() {
+        info!("Using cached .dbg: {:?}", dbg_path);
+        return find_display_cursor_rva(&dbg_path);
     }
 
     // Download the .7z archive
@@ -320,7 +380,7 @@ async fn download_and_parse_pdb(version: &str) -> Result<u32> {
 
     let seven_z_path = cache.join(format!("debuginfo-v{}.7z", version));
     std::fs::create_dir_all(&cache)
-        .context("Failed to create PDB cache directory")?;
+        .context("Failed to create debug info cache directory")?;
 
     download_file(&url, &seven_z_path)
         .await
@@ -345,19 +405,19 @@ async fn download_and_parse_pdb(version: &str) -> Result<u32> {
     .await
     .context("7z extraction task panicked")??;
 
-    // Find the .pdb file in extracted content
-    let found_pdb = find_pdb_file(&extract_dir)?;
-    info!("Found PDB: {:?}", found_pdb);
+    // Find the sunshine.dbg file in extracted content
+    let found_dbg = find_dbg_file(&extract_dir)?;
+    info!("Found .dbg: {:?}", found_dbg);
 
     // Copy to cache location
-    std::fs::copy(&found_pdb, &pdb_path)
-        .context("Failed to cache PDB file")?;
+    std::fs::copy(&found_dbg, &dbg_path)
+        .context("Failed to cache .dbg file")?;
 
     // Clean up extraction dir and archive
     std::fs::remove_dir_all(&extract_dir).ok();
     std::fs::remove_file(&seven_z_path).ok();
 
-    find_display_cursor_rva(&pdb_path)
+    find_display_cursor_rva(&dbg_path)
 }
 
 /// Download a file from a URL to a local path.
@@ -386,17 +446,25 @@ async fn download_file(url: &str, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Recursively search for a .pdb file in a directory.
-fn find_pdb_file(dir: &Path) -> Result<PathBuf> {
+/// Recursively search for the `sunshine.dbg` file in a directory.
+fn find_dbg_file(dir: &Path) -> Result<PathBuf> {
+    for entry in walkdir(dir)? {
+        if let Some(name) = entry.file_name().and_then(|n| n.to_str()) {
+            if name.eq_ignore_ascii_case("sunshine.dbg") {
+                return Ok(entry);
+            }
+        }
+    }
+    // Fall back to any .dbg file
     for entry in walkdir(dir)? {
         if entry
             .extension()
-            .map_or(false, |e| e.eq_ignore_ascii_case("pdb"))
+            .map_or(false, |e| e.eq_ignore_ascii_case("dbg"))
         {
             return Ok(entry);
         }
     }
-    Err(anyhow!("No .pdb file found in extracted archive"))
+    Err(anyhow!("No .dbg file found in extracted archive"))
 }
 
 /// Simple recursive directory listing.
@@ -416,38 +484,43 @@ fn walkdir(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(results)
 }
 
-/// Parse a PDB file and find the RVA of the `display_cursor` global variable.
-fn find_display_cursor_rva(pdb_path: &Path) -> Result<u32> {
-    use pdb::FallibleIterator;
+/// Parse a `.dbg` file (PE with COFF symbols) and find the RVA of the
+/// `display_cursor` global variable.
+fn find_display_cursor_rva(dbg_path: &Path) -> Result<u32> {
+    use object::{Object, ObjectSymbol, SymbolKind};
 
-    let file = std::fs::File::open(pdb_path)
-        .with_context(|| format!("Cannot open PDB: {:?}", pdb_path))?;
-    let mut pdb = pdb::PDB::open(file).context("Failed to parse PDB")?;
+    let data = std::fs::read(dbg_path)
+        .with_context(|| format!("Cannot read .dbg file: {:?}", dbg_path))?;
+    let file = object::File::parse(&*data)
+        .with_context(|| format!("Failed to parse .dbg file: {:?}", dbg_path))?;
 
-    let symbol_table = pdb.global_symbols().context("No global symbol table")?;
-    let address_map = pdb.address_map().context("No address map in PDB")?;
+    // PE symbol addresses include the image base; subtract it to get the RVA.
+    let image_base = file.relative_address_base();
+    info!(".dbg image base: 0x{:016x}", image_base);
 
-    let mut iter = symbol_table.iter();
-    while let Some(symbol) = iter.next().context("Error iterating PDB symbols")? {
-        if let Ok(pdb::SymbolData::Data(data)) = symbol.parse() {
-            let name = data.name.to_string();
-            // Match both decorated and undecorated names
-            if name == "display_cursor" || name.contains("display_cursor") {
-                if let Some(rva) = data.offset.to_rva(&address_map) {
-                    info!(
-                        "PDB symbol '{}' found at RVA 0x{:08x}",
-                        name,
-                        rva.0
-                    );
-                    return Ok(rva.0);
-                }
+    for symbol in file.symbols() {
+        let name = match symbol.name() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+
+        // Match the exact `display_cursor` data symbol (skip section/refptr symbols)
+        if name == "display_cursor" && symbol.kind() == SymbolKind::Data {
+            let addr = symbol.address();
+            if addr != 0 {
+                let rva = addr.wrapping_sub(image_base);
+                info!(
+                    ".dbg symbol '{}': VA=0x{:016x}, RVA=0x{:08x}",
+                    name, addr, rva
+                );
+                return Ok(rva as u32);
             }
         }
     }
 
     Err(anyhow!(
-        "Symbol 'display_cursor' not found in PDB {:?}",
-        pdb_path
+        "Symbol 'display_cursor' not found in .dbg {:?}",
+        dbg_path
     ))
 }
 
@@ -485,116 +558,123 @@ fn read_process_bool(pid: u32, address: usize) -> Result<bool> {
 /// Start the Sunshine monitor.
 ///
 /// 1. Locate the running `sunshine.exe` process.
-/// 2. Detect its version and download the matching PDB with debug symbols.
-/// 3. Parse the PDB to find the `display_cursor` global variable's RVA.
+/// 2. Detect its version and download the matching `.dbg` with debug symbols.
+/// 3. Parse the `.dbg` to find the `display_cursor` global variable's RVA.
 /// 4. Periodically read the live value from process memory.
 /// 5. Emit [`SunshineSettingsEvent`] whenever the value changes.
+/// 6. If the process exits, re-discover and re-attach automatically.
 pub async fn run_monitor(tx: mpsc::Sender<SunshineSettingsEvent>) -> Result<()> {
     info!("Sunshine monitor starting…");
 
-    // ── Phase 1: find the running Sunshine process ──────────────────────────
-    let proc = loop {
-        match find_sunshine_process() {
-            Ok(Some(p)) if p.module_base != 0 => break p,
-            Ok(Some(p)) => {
-                warn!(
-                    "Found Sunshine (PID {}) but cannot read module base (access denied?)",
-                    p.pid
-                );
-                tokio::time::sleep(Duration::from_secs(RETRY_INTERVAL_SECS)).await;
-            }
-            Ok(None) => {
-                debug!("Sunshine process not found, retrying…");
-                tokio::time::sleep(Duration::from_secs(RETRY_INTERVAL_SECS)).await;
-            }
-            Err(e) => {
-                warn!("Error locating Sunshine process: {}", e);
-                tokio::time::sleep(Duration::from_secs(RETRY_INTERVAL_SECS)).await;
-            }
-        }
-    };
-
-    info!(
-        "Sunshine process found: PID={}, base=0x{:016x}, path={:?}",
-        proc.pid, proc.module_base, proc.exe_path
-    );
-
-    // ── Phase 2: detect version ─────────────────────────────────────────────
-    let version = detect_sunshine_version(&proc.exe_path);
-    info!("Sunshine version: {}", version);
-
-    // ── Phase 3: download PDB and find display_cursor RVA ───────────────────
-    let rva = match download_and_parse_pdb(&version).await {
-        Ok(rva) => {
-            info!("display_cursor RVA: 0x{:08x}", rva);
-            rva
-        }
-        Err(e) => {
-            error!("Failed to resolve display_cursor from PDB: {}", e);
-            // Cannot monitor without the symbol offset. Send default (true)
-            // and keep the task alive so it doesn't crash the agent.
-            let _ = tx
-                .send(SunshineSettingsEvent { draw_cursor: true })
-                .await;
-            warn!("Sunshine monitor running in fallback mode (draw_cursor=true)");
-            loop {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
-            }
-        }
-    };
-
-    let target_addr = proc.module_base + rva as usize;
-    info!(
-        "Will read display_cursor at 0x{:016x} (base 0x{:016x} + RVA 0x{:08x})",
-        target_addr, proc.module_base, rva
-    );
-
-    // ── Phase 4: poll loop ──────────────────────────────────────────────────
+    // Outer loop: re-discovers the Sunshine process when it exits.
     let mut last_value: Option<bool> = None;
-    let mut consecutive_fails = 0u32;
-    let mut poll = interval(Duration::from_millis(POLL_INTERVAL_MS));
 
     loop {
-        poll.tick().await;
-
-        match read_process_bool(proc.pid, target_addr) {
-            Ok(val) => {
-                consecutive_fails = 0;
-                if last_value != Some(val) {
-                    info!(
-                        "Sunshine display_cursor: {:?} → {}",
-                        last_value.map(|v| v.to_string()).unwrap_or("(init)".into()),
-                        val
+        // ── Phase 1: find the running Sunshine process ──────────────────────
+        let proc = loop {
+            match find_sunshine_process() {
+                Ok(Some(p)) if p.module_base != 0 => break p,
+                Ok(Some(p)) => {
+                    warn!(
+                        "Found Sunshine (PID {}) but cannot read module base (access denied?)",
+                        p.pid
                     );
-                    last_value = Some(val);
-                    if tx
-                        .send(SunshineSettingsEvent { draw_cursor: val })
-                        .await
-                        .is_err()
-                    {
-                        info!("Settings receiver dropped, stopping Sunshine monitor");
-                        return Ok(());
+                    tokio::time::sleep(Duration::from_secs(RETRY_INTERVAL_SECS)).await;
+                }
+                Ok(None) => {
+                    debug!("Sunshine process not found, retrying…");
+                    tokio::time::sleep(Duration::from_secs(RETRY_INTERVAL_SECS)).await;
+                }
+                Err(e) => {
+                    warn!("Error locating Sunshine process: {}", e);
+                    tokio::time::sleep(Duration::from_secs(RETRY_INTERVAL_SECS)).await;
+                }
+            }
+        };
+
+        info!(
+            "Sunshine process found: PID={}, base=0x{:016x}, path={:?}",
+            proc.pid, proc.module_base, proc.exe_path
+        );
+
+        // ── Phase 2: detect version ─────────────────────────────────────────
+        let version = detect_sunshine_version(&proc.exe_path);
+        info!("Sunshine version: {}", version);
+
+        // ── Phase 3: download .dbg and find display_cursor RVA ──────────────
+        let rva = match download_and_parse_dbg(&version).await {
+            Ok(rva) => {
+                info!("display_cursor RVA: 0x{:08x}", rva);
+                rva
+            }
+            Err(e) => {
+                error!("Failed to resolve display_cursor from .dbg: {}", e);
+                // Cannot monitor without the symbol offset. Send default (true)
+                // and keep the task alive so it doesn't crash the agent.
+                let _ = tx
+                    .send(SunshineSettingsEvent { draw_cursor: true })
+                    .await;
+                warn!("Sunshine monitor running in fallback mode (draw_cursor=true)");
+                loop {
+                    tokio::time::sleep(Duration::from_secs(3600)).await;
+                }
+            }
+        };
+
+        let target_addr = proc.module_base + rva as usize;
+        info!(
+            "Will read display_cursor at 0x{:016x} (base 0x{:016x} + RVA 0x{:08x})",
+            target_addr, proc.module_base, rva
+        );
+
+        // ── Phase 4: poll loop ──────────────────────────────────────────────
+        let mut consecutive_fails = 0u32;
+        let mut poll = interval(Duration::from_millis(POLL_INTERVAL_MS));
+
+        loop {
+            poll.tick().await;
+
+            match read_process_bool(proc.pid, target_addr) {
+                Ok(val) => {
+                    consecutive_fails = 0;
+                    if last_value != Some(val) {
+                        info!(
+                            "Sunshine display_cursor: {:?} → {}",
+                            last_value.map(|v| v.to_string()).unwrap_or("(init)".into()),
+                            val
+                        );
+                        last_value = Some(val);
+                        if tx
+                            .send(SunshineSettingsEvent { draw_cursor: val })
+                            .await
+                            .is_err()
+                        {
+                            info!("Settings receiver dropped, stopping Sunshine monitor");
+                            return Ok(());
+                        }
+                    }
+                }
+                Err(e) => {
+                    consecutive_fails += 1;
+                    if consecutive_fails <= 3 {
+                        debug!("ReadProcessMemory failed (attempt {}): {}", consecutive_fails, e);
+                    } else if consecutive_fails == 4 {
+                        warn!(
+                            "Sunshine process may have exited (consecutive read failures: {})",
+                            consecutive_fails
+                        );
+                    }
+                    // After many failures, the process likely exited.
+                    // Break out of the poll loop to re-discover the process.
+                    if consecutive_fails > 30 {
+                        warn!("Too many consecutive read failures, restarting discovery…");
+                        break;
                     }
                 }
             }
-            Err(e) => {
-                consecutive_fails += 1;
-                if consecutive_fails <= 3 {
-                    debug!("ReadProcessMemory failed (attempt {}): {}", consecutive_fails, e);
-                } else if consecutive_fails == 4 {
-                    warn!(
-                        "Sunshine process may have exited (consecutive read failures: {})",
-                        consecutive_fails
-                    );
-                }
-                // After many failures, the process likely exited.
-                // TODO: re-discover the process and re-attach.
-                if consecutive_fails > 30 {
-                    warn!("Too many consecutive read failures, restarting discovery…");
-                    // Recurse into run_monitor to restart the whole flow
-                    return Box::pin(run_monitor(tx)).await;
-                }
-            }
         }
+
+        // Small delay before restarting discovery
+        tokio::time::sleep(Duration::from_secs(RETRY_INTERVAL_SECS)).await;
     }
 }

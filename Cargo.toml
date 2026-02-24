@@ -3,6 +3,14 @@ name = "deragabu-agent"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "deragabu_agent"
+crate-type = ["staticlib", "rlib"]
+
+[[bin]]
+name = "deragabu-agent"
+path = "src/main.rs"
+
 [dependencies]
 
 # Protobuf
@@ -43,8 +51,8 @@ arboard = "3"
 # PNG encoding/decoding for clipboard images
 image = { version = "0.25", default-features = false, features = ["png"] }
 
-# Sunshine monitor: PDB parsing, HTTP download, 7z extraction
-pdb = "0.8"
+# Sunshine monitor: debug symbol parsing, HTTP download, 7z extraction
+object = { version = "0.36", default-features = false, features = ["read", "pe", "coff"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 sevenz-rust = "0.6"
 
@@ -61,6 +69,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_ProcessStatus",
     "Win32_Storage_FileSystem",
+    "Win32_Security",
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
