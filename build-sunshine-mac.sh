@@ -402,15 +402,16 @@ if [[ -z "$MACOS_SDK" ]]; then
     echo "  xcode-select --install"
 fi
 
+# Resolve Homebrew prefix — on Apple Silicon it's /opt/homebrew, on Intel /usr/local
+HOMEBREW_PREFIX="$(brew --prefix 2>/dev/null || echo "/opt/homebrew")"
+echo "  Homebrew prefix: $HOMEBREW_PREFIX"
+
 # Resolve Homebrew OpenSSL path — macOS does not ship OpenSSL headers.
 OPENSSL_ROOT="$(brew --prefix openssl@3 2>/dev/null || brew --prefix openssl 2>/dev/null || echo "")"
 if [[ -n "$OPENSSL_ROOT" && -d "$OPENSSL_ROOT" ]]; then
     echo "  OpenSSL found at: $OPENSSL_ROOT"
-    # Export so that CMake FindOpenSSL, pkg-config, and compiler all find it
     export OPENSSL_ROOT_DIR="$OPENSSL_ROOT"
     export PKG_CONFIG_PATH="${OPENSSL_ROOT}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-    export CPATH="${OPENSSL_ROOT}/include:${CPATH:-}"
-    export LIBRARY_PATH="${OPENSSL_ROOT}/lib:${LIBRARY_PATH:-}"
 else
     echo "WARNING: Could not find Homebrew OpenSSL. Install with: brew install openssl@3"
 fi
@@ -420,10 +421,8 @@ fi
         -DCMAKE_BUILD_TYPE=Release \
         -DSUNSHINE_ENABLE_TRAY=OFF \
         ${MACOS_SDK:+-DCMAKE_OSX_SYSROOT="$MACOS_SDK"} \
+        -DCMAKE_PREFIX_PATH="$HOMEBREW_PREFIX" \
         ${OPENSSL_ROOT:+-DOPENSSL_ROOT_DIR="$OPENSSL_ROOT"} \
-        ${OPENSSL_ROOT:+-DOPENSSL_INCLUDE_DIR="$OPENSSL_ROOT/include"} \
-        ${OPENSSL_ROOT:+-DOPENSSL_CRYPTO_LIBRARY="$OPENSSL_ROOT/lib/libcrypto.dylib"} \
-        ${OPENSSL_ROOT:+-DOPENSSL_SSL_LIBRARY="$OPENSSL_ROOT/lib/libssl.dylib"} \
         2>&1 | tail -20
 )
 
