@@ -394,10 +394,19 @@ echo "━━━ Step 5: Building Sunshine ━━━"
 
 mkdir -p "$SUNSHINE_DIR/build"
 
+# Resolve macOS SDK path — required so the compiler can find C++ stdlib headers
+# like <cstddef>.  Without this, /usr/bin/c++ may fail on newer Xcode setups.
+MACOS_SDK="$(xcrun --show-sdk-path 2>/dev/null)"
+if [[ -z "$MACOS_SDK" ]]; then
+    echo "WARNING: xcrun --show-sdk-path returned empty. Install Xcode Command Line Tools:"
+    echo "  xcode-select --install"
+fi
+
 (cd "$SUNSHINE_DIR" && \
     cmake -B build -G Ninja -S . \
         -DCMAKE_BUILD_TYPE=Release \
         -DSUNSHINE_ENABLE_TRAY=OFF \
+        ${MACOS_SDK:+-DCMAKE_OSX_SYSROOT="$MACOS_SDK"} \
         2>&1 | tail -20
 )
 
