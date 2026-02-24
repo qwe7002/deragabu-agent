@@ -609,12 +609,14 @@ pub async fn run_monitor(tx: mpsc::Sender<SunshineSettingsEvent>) -> Result<()> 
             }
             Err(e) => {
                 error!("Failed to resolve display_cursor from .dbg: {}", e);
-                // Cannot monitor without the symbol offset. Send default (true)
+                // Cannot monitor without the symbol offset. Send default (false)
                 // and keep the task alive so it doesn't crash the agent.
+                // draw_cursor=false means "hide overlay" — safe default when
+                // we can't determine Sunshine's state.
                 let _ = tx
-                    .send(SunshineSettingsEvent { draw_cursor: true })
+                    .send(SunshineSettingsEvent { draw_cursor: false })
                     .await;
-                warn!("Sunshine monitor running in fallback mode (draw_cursor=true)");
+                warn!("Sunshine monitor running in fallback mode (draw_cursor=false, overlay hidden)");
                 loop {
                     tokio::time::sleep(Duration::from_secs(3600)).await;
                 }
@@ -637,15 +639,22 @@ pub async fn run_monitor(tx: mpsc::Sender<SunshineSettingsEvent>) -> Result<()> 
             match read_process_bool(proc.pid, target_addr) {
                 Ok(val) => {
                     consecutive_fails = 0;
-                    if last_value != Some(val) {
+                    // `val` is Sunshine's `display_cursor`: true = Sunshine draws
+                    // HW cursor in video stream.  We invert because `draw_cursor`
+                    // in our protocol means "show overlay cursor":
+                    //   Sunshine draws cursor → overlay NOT needed → draw_cursor=false
+                    //   Sunshine hides cursor → overlay needed     → draw_cursor=true
+                    let show_overlay = !val;
+                    if last_value != Some(show_overlay) {
                         info!(
-                            "Sunshine display_cursor: {:?} → {}",
+                            "Sunshine display_cursor: {:?} → {} (overlay: {})",
                             last_value.map(|v| v.to_string()).unwrap_or("(init)".into()),
-                            val
+                            val,
+                            if show_overlay { "show" } else { "hide" }
                         );
-                        last_value = Some(val);
+                        last_value = Some(show_overlay);
                         if tx
-                            .send(SunshineSettingsEvent { draw_cursor: val })
+                            .send(SunshineSettingsEvent { draw_cursor: show_overlay })
                             .await
                             .is_err()
                         {

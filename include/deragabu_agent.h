@@ -54,10 +54,11 @@ void deragabu_agent_shutdown(void);
 /**
  * Push the current `display_cursor` state from Sunshine into the agent.
  *
- * @param display  true  — Sunshine draws the cursor in the video stream;
- *                          the agent tells clients to hide the overlay.
- *                 false — Sunshine does NOT draw the cursor;
- *                          the agent tells clients to show the overlay.
+ * @param display  true  — Show the overlay cursor to the user.
+ *                 false — Hide the overlay cursor.
+ *
+ * On macOS (Sunshine integration), pass the `*cursor` flag directly:
+ *   deragabu_agent_set_display_cursor(*cursor);
  *
  * This is thread-safe and lock-free.  The change is picked up by the
  * sunshine-monitor task within ~100 ms and broadcast to all connected

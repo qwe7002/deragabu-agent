@@ -5,7 +5,7 @@ edition = "2021"
 
 [lib]
 name = "deragabu_agent"
-crate-type = ["staticlib", "rlib"]
+crate-type = ["rlib"]
 
 [[bin]]
 name = "deragabu-agent"

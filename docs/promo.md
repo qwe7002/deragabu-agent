@@ -1,6 +1,6 @@
 ## Plan: Sunshine macOS 光標控制 — Agent 整合進 Sunshine 統一編譯
 
-**TL;DR**: 將 deragabu-agent 編譯為靜態庫 (`.a`)，連結進 Sunshine 的 CMake 構建系統。Sunshine 通過 C FFI 呼叫 agent 的光標捕獲、WebRTC overlay、剪貼簿同步等功能。macOS 使用 AVFoundation (`AVCaptureSession` + `AVCaptureScreenInput`)，其 `capturesCursor` 屬性**支援動態切換**，無需重啟串流。
+**TL;DR**: 將 deragabu-agent 編譯為靜態庫 (`.a`)，連結進 Sunshine 的 CMake 構建系統。Sunshine 通過 C FFI 呼叫 agent 的光標捕獲、WebRTC overlay、剪貼簿同步等功能。macOS 使用 AVFoundation (`AVCaptureSession` + `AVCaptureScreenInput`)，在 session 建立時設定 `capturesCursor = NO`（best-effort，見已知限制）。Agent 的軟光標 overlay 是主要光標機制，不依賴 `capturesCursor` 的可靠性。
 
 ---
 
@@ -11,7 +11,7 @@
 │               Sunshine (C++ / ObjC)             │
 │                                                 │
 │  main.cpp ──► deragabu_agent_init()             │
-│  display.mm ► capturesCursor = *cursor           │
+│  display.mm ► !*cursor → agent overlay control  │
 │  input ─────► deragabu_agent_set_display_cursor │
 │  shutdown ──► deragabu_agent_shutdown()          │
 │                                                 │
@@ -249,55 +249,56 @@ Corrosion 會自動執行 `cargo build --release`，產出 `libderagabu_agent.a`
 
 #### Part C — Sunshine 源碼修改
 
-**9. 修改 macOS 視頻捕獲 — 動態切換 `capturesCursor`**
+**9. 修改 macOS 視頻捕獲 — `capturesCursor = NO` (once at init)**
 
 Sunshine macOS 使用 AVFoundation (`AVCaptureSession` + `AVCaptureScreenInput`)。
-`AVCaptureScreenInput` 的 `capturesCursor` 屬性可以在捕獲過程中動態修改，無需重啟 session。
 
-**`av_video.h`** — 暴露 screenInput 作為 property：
+> **⚠️ 已知限制**：`AVCaptureScreenInput.capturesCursor` 存在以下問題：
+> - 動態切換需要 `beginConfiguration/commitConfiguration`（本質上暫停/恢復 session），在低延遲串流中代價過大
+> - **macOS bug**：若用戶在「輔助功能」中調整了游標大小，`capturesCursor = NO` 會被**靜默忽略**，硬體游標仍會出現在捕獲的視頻中
+> - 沒有已知的 workaround
+>
+> 因此 agent 的軟光標 overlay 是**唯一可靠**的光標機制。`capturesCursor = NO` 只是 best-effort 的硬體游標隱藏。
+
+**`av_video.m`** — 在 session 初始化時一次性設定（不動態切換）：
 ```objc
-@property(nonatomic, retain) AVCaptureScreenInput *screenInput;
-- (void)setCapturesCursor:(BOOL)capturesCursor;
+AVCaptureScreenInput *screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:self.displayID];
+
+// Deragabu Agent: hide hardware cursor from capture (best-effort).
+// NOTE: Known macOS bug — if Accessibility cursor size != default,
+//       this setting may be silently ignored.
+[screenInput setCapturesCursor:NO];
 ```
 
-**`av_video.m`** — 保存 screenInput 並實現切換方法：
-```objc
-// initWithDisplay: 中
-self.screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:self.displayID];
-
-// 新增方法
-- (void)setCapturesCursor:(BOOL)capturesCursor {
-  @synchronized(self) {
-    if (self.screenInput) {
-      self.screenInput.capturesCursor = capturesCursor;
-    }
-  }
-}
-```
-
-**`display.mm`** — 捕獲循環中檢查 `*cursor` 並即時切換：
+**`display.mm`** — 控制 overlay，不觸碰 `capturesCursor`：
 ```objc
 #include "deragabu_agent.h"
 
 // 在 capture() 方法的循環中
 static bool last_cursor_state = true;
-bool current_cursor = cursor ? *cursor : true;
-if (current_cursor != last_cursor_state) {
-  [av_capture setCapturesCursor:(current_cursor ? YES : NO)];
-  last_cursor_state = current_cursor;
+bool want_cursor = cursor ? *cursor : true;
+if (want_cursor != last_cursor_state) {
   if (deragabu_agent_is_running()) {
-    deragabu_agent_set_display_cursor(current_cursor);
+    // Direct mapping: true = show overlay, false = hide overlay
+    deragabu_agent_set_display_cursor(want_cursor);
   }
+  last_cursor_state = want_cursor;
 }
 ```
 
-**10. `display_cursor` 切換 — 完全即時生效**
+> **語義說明**：FFI 的 `display` 參數語義是「是否向用戶顯示 overlay 光標」。直接傳遞 `*cursor`，無需任何反轉。
+> Windows 端的反轉在 agent 內部處理（Sunshine `display_cursor=true` → HW 光標在視頻流 → overlay 不需要 → `draw_cursor=false`）。
+>
+> **已知副作用**：若 macOS bug 觸發（`capturesCursor=NO` 被忽略，硬體游標仍在視頻流中），`want_cursor=true` 時會出現「雙光標」（硬體 + overlay）。這是 Apple API 的限制。
 
-由於 `AVCaptureScreenInput.capturesCursor` 支援動態切換，**不需要重啟串流**。切換 `display_cursor` 時：
-1. `display.mm` 的捕獲循環即時更新 `capturesCursor` → 視頻流中的硬光標立即消失/出現
-2. Agent FFI 推送新狀態 → 廣播 `SettingsData` → 客戶端 overlay 軟光標即時響應
+**10. `display_cursor` 切換 — overlay 即時、硬體游標 best-effort**
 
-> **注意**：這與 ScreenCaptureKit (`SCStream`) 不同 — SCK 的 `showsCursor` 需要重建 stream 才能生效。AVFoundation 的 `AVCaptureScreenInput.capturesCursor` 是一個普通 property，可以隨時修改。
+切換 `display_cursor` 時：
+1. `display.mm` 的捕獲循環直接將 `*cursor` 推送給 agent FFI → 廣播 `SettingsData` → 客戶端 overlay **即時響應**
+2. 硬體游標狀態**不變**（`capturesCursor = NO` 在 init 時設定，不動態切換）
+
+> **注意**：如果 macOS bug 導致硬體游標仍出現在視頻流中，用戶在 overlay OFF 時可能看到硬體游標殘影。
+> 這是 Apple API 的已知問題，無法在 Sunshine 層面解決。
 
 **11. Sunshine 啟動 / 關閉時初始化 / 銷毀 agent**
 
@@ -333,37 +334,48 @@ void cleanup() {
 
 `proto/cursor.proto` 中的 `SettingsData.draw_cursor` 已經定義，`src/webrtc_server.rs` 已會將 `SunshineSettingsEvent` 廣播給客戶端：
 
-- `draw_cursor = true`：Sunshine 在視頻流中繪製光標 → 客戶端隱藏 overlay 軟光標（避免雙光標）
-- `draw_cursor = false`：Sunshine 不繪製光標 → 客戶端顯示 agent 的 overlay 軟光標
+- `draw_cursor = true`：Agent 告訴客戶端顯示 overlay 軟光標
+- `draw_cursor = false`：Agent 告訴客戶端隱藏 overlay 軟光標
+
+> Windows 端的語義反轉在 agent 內部完成：Sunshine `display_cursor=true`（HW 光標在視頻流中）→ overlay 不需要 → `draw_cursor=false`。
+> 客戶端不需要知道平台差異，只需根據 `draw_cursor` 顯示/隱藏 overlay。
 
 ---
 
 ### User Workflow
 
-1. 在 Sunshine 配置中設定 `display_cursor = disabled`（關閉視頻流中的硬光標）
+1. 在 Sunshine 配置中啟用 agent（自動設定 `capturesCursor = NO`）
 2. 啟動 Sunshine → agent 自動初始化 → WebRTC server 啟動
-3. 啟動串流 → `AVCaptureSession` 啟動，`capturesCursor` 根據設定
-4. 用 Moonlight + test-client.html 連線 → 客戶端收到 `draw_cursor = false` → 顯示軟光標 overlay
+3. 啟動串流 → `AVCaptureSession` 啟動，硬體游標 best-effort 隱藏
+4. 用 Moonlight + test-client.html 連線 → 客戶端收到 `draw_cursor = true` → 顯示軟光標 overlay
 5. 若用戶在串流中切換了 `display_cursor`：
-   - `capturesCursor` **即時切換** → 視頻流硬光標立即響應
    - Agent overlay **即時調整**（FFI push → 廣播 SettingsData）
+   - 硬體游標不變（`capturesCursor` 不動態切換）
    - **無需重啟串流**
+
+> **已知限制**：若 macOS 輔助功能中調整了游標大小，`capturesCursor = NO` 可能被忽略，
+> 導致視頻流中出現硬體游標 + 軟光標的「雙光標」。建議用戶保持預設游標大小。
 
 ---
 
 ### Verification
 
 1. **統一編譯測試**：使用 `build-sunshine-mac.sh` 一次完成 agent 編譯 + Sunshine patch + 構建
-2. **初始狀態測試**：設定 `display_cursor = disabled` → 啟動 Sunshine + 串流 → 確認視頻流中無系統光標
-3. **Overlay 測試**：用 Moonlight 連線 + test-client.html → 確認軟光標 overlay 正常顯示
-4. **即時切換測試**：運行時切換 `display_cursor` → 確認 `capturesCursor` + agent overlay 即時響應（無需重啟）
-5. **獨立運行測試**：不修改 Sunshine 時，`cargo build` 單獨編譯 agent 二進制仍可正常運行
+2. **初始狀態測試**：啟動 Sunshine + 串流 → 確認 agent overlay 軟光標正常顯示
+3. **硬體游標測試**：確認 `capturesCursor = NO` 生效 → 視頻流中無硬體游標（保持預設游標大小）
+4. **Accessibility bug 重現**：輔助功能中調整游標大小 → 確認硬體游標是否重新出現（記錄 bug 行為）
+5. **Overlay 切換測試**：運行時切換 `display_cursor` → 確認 overlay 即時響應（不重啟串流）
+6. **獨立運行測試**：不修改 Sunshine 時，`cargo build` 單獨編譯 agent 二進制仍可正常運行
 
 ### Decisions
 
 - **staticlib 而非 cdylib**：靜態庫連結進 Sunshine 二進制，單一可執行檔，無需部署額外 `.dylib`
 - **corrosion 整合**：CMake 自動調用 `cargo build`，開發者只需 `cmake --build`，零額外步驟
 - **FFI + AtomicBool**：跨語言狀態同步最安全的方式，無 callback 生命週期問題
-- **完全即時切換**：`AVCaptureScreenInput.capturesCursor` 支援動態修改，硬光標 + 軟光標 overlay 同時即時響應
+- **capturesCursor = NO (best-effort)**：在 session 建立時一次性設定，不動態切換。已知 macOS bug 可能導致此設定被忽略
+- **Agent overlay 是主要光標**：不依賴 `capturesCursor` 的可靠性，overlay 始終是用戶看到的光標
+- **不動態切換 capturesCursor**：`beginConfiguration/commitConfiguration` 代價對低延遲串流過大，且 bug 導致行為不可預測
+- **`draw_cursor` 語義 = 「顯示 overlay 光標」**：`true` = 顯示，`false` = 隱藏。客戶端無需知道平台差異
+- **Windows 反轉在 agent 內部**：Sunshine `display_cursor` 讀取後反轉再發送，macOS FFI 直接傳遞
 - **保留獨立二進制**：`[[bin]]` 仍存在，不改 Sunshine 時 agent 可獨立運行（Windows / 非整合場景）
-- **AVFoundation 而非 ScreenCaptureKit**：Sunshine 目前使用 `AVCaptureSession`，`capturesCursor` 比 SCK 的 `showsCursor` 更靈活
+- **AVFoundation 而非 ScreenCaptureKit**：Sunshine 目前使用 `AVCaptureSession`，非 SCK

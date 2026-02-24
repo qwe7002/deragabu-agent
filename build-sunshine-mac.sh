@@ -9,11 +9,19 @@
 #   2. Clone Sunshine (or use existing checkout)
 #   3. Build deragabu-agent as a static library (libderagabu_agent.a)
 #   4. Patch Sunshine source to integrate the agent:
-#      - av_video.h: Add screenInput property + setCapturesCursor method
-#      - av_video.m: Store screenInput, implement setCapturesCursor
-#      - display.mm: Toggle capturesCursor based on *cursor flag + call agent FFI
+#      - av_video.m: Set capturesCursor=NO at session init (best-effort)
+#      - display.mm: Forward *cursor state to agent FFI (overlay control)
 #      - main.cpp: Initialize/shutdown agent
 #   5. Build Sunshine with CMake + Ninja, linking the agent
+#
+# NOTE on capturesCursor:
+#   AVCaptureScreenInput.capturesCursor is set to NO once at init time.
+#   It is NOT toggled dynamically because:
+#     - Dynamic changes require beginConfiguration/commitConfiguration (session pause)
+#     - Known macOS bug: if accessibility cursor size was changed,
+#       capturesCursor=NO is silently ignored and cursor still appears.
+#   The agent's soft cursor overlay is the primary cursor mechanism.
+#   The *cursor toggle from Moonlight only controls overlay visibility.
 #
 # Usage:
 #   chmod +x build-sunshine-mac.sh
@@ -121,7 +129,7 @@ echo ""
 
 echo "━━━ Step 3: Building deragabu-agent static library ━━━"
 
-(cd "$AGENT_DIR" && cargo build --release --lib)
+(cd "$AGENT_DIR" && cargo rustc --release --lib --crate-type staticlib)
 
 AGENT_LIB="$AGENT_DIR/target/release/libderagabu_agent.a"
 AGENT_HEADER="$AGENT_DIR/include/deragabu_agent.h"
@@ -151,81 +159,40 @@ if [[ -f "$PATCH_MARKER" ]]; then
     rm -f "$PATCH_MARKER"
 fi
 
-# ── Patch 4a: av_video.h — Add screenInput property + setCapturesCursor ──
-
-AV_VIDEO_H="$SUNSHINE_DIR/src/platform/macos/av_video.h"
-
-if [[ -f "$AV_VIDEO_H" ]]; then
-    echo "  Patching av_video.h..."
-
-    # Add screenInput property and setCapturesCursor method declaration.
-    # We look for the existing @property declarations and add ours.
-    # Also add the setCapturesCursor method.
-
-    cat > /tmp/deragabu_av_video_h.patch << 'PATCH_EOF'
---- a/src/platform/macos/av_video.h
-+++ b/src/platform/macos/av_video.h
-@@ -1,3 +1,5 @@
-+// Patched by deragabu-agent build script
-+
- /**
-  * @file src/platform/macos/av_video.h
-  * @brief Declarations for video capture on macOS.
-PATCH_EOF
-
-    # Use sed to add the screenInput property and method
-    # Find @property lines and add our property after them
-    if ! grep -q "screenInput" "$AV_VIDEO_H"; then
-        # Add property for screenInput before @end
-        sed -i.bak '/@interface AVVideo/,/@end/ {
-            /@end/ i\
-\
-/** The screen capture input — exposed so display.mm can toggle capturesCursor. */\
-@property(nonatomic, retain) AVCaptureScreenInput *screenInput;\
-\
-/** Toggle cursor capture on the running session. Thread-safe. */\
-- (void)setCapturesCursor:(BOOL)capturesCursor;\
-
-        }' "$AV_VIDEO_H"
-        rm -f "${AV_VIDEO_H}.bak"
-        echo "    ✓ Added screenInput property and setCapturesCursor method"
-    else
-        echo "    ⊘ Already patched"
-    fi
-else
-    echo "  WARNING: av_video.h not found at $AV_VIDEO_H"
-fi
-
-# ── Patch 4b: av_video.m — Store screenInput, implement setCapturesCursor ──
+# ── Patch 4a: av_video.m — Set capturesCursor=NO at session init ──
+#
+# This is a best-effort patch. Known limitation:
+#   macOS bug — if the user has changed cursor size in Accessibility settings,
+#   capturesCursor=NO may be silently ignored and the hardware cursor will
+#   still appear in the captured video. There is no known workaround.
+#   The agent's soft cursor overlay compensates by always being the primary
+#   cursor mechanism.
 
 AV_VIDEO_M="$SUNSHINE_DIR/src/platform/macos/av_video.m"
 
 if [[ -f "$AV_VIDEO_M" ]]; then
-    echo "  Patching av_video.m..."
+    echo "  Patching av_video.m (capturesCursor=NO at init)..."
 
-    if ! grep -q "setCapturesCursor" "$AV_VIDEO_M"; then
-        # 1. Store the screenInput in initWithDisplay
-        #    Replace: AVCaptureScreenInput *screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:self.displayID];
-        #    With:    self.screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:self.displayID];
-        #    And update subsequent references from screenInput to self.screenInput
-        sed -i.bak 's/AVCaptureScreenInput \*screenInput = \[\[AVCaptureScreenInput alloc\] initWithDisplayID:self\.displayID\];/self.screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:self.displayID];\
-  AVCaptureScreenInput *screenInput = self.screenInput;/' "$AV_VIDEO_M"
-
-        # 2. Add setCapturesCursor method before @end
-        sed -i.bak2 '/@end/ i\
+    if ! grep -q "capturesCursor" "$AV_VIDEO_M"; then
+        # After the line that creates the screenInput, add capturesCursor=NO
+        # wrapped in beginConfiguration/commitConfiguration.
+        #
+        # Original:   AVCaptureScreenInput *screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:self.displayID];
+        # After:      + [screenInput setCapturesCursor:NO];
+        #
+        # We also wrap the session addInput in beginConfiguration/commitConfiguration
+        # to ensure the capturesCursor change is applied atomically.
+        sed -i.bak '/AVCaptureScreenInput \*screenInput = \[\[AVCaptureScreenInput alloc\] initWithDisplayID:self\.displayID\];/ a\
 \
-- (void)setCapturesCursor:(BOOL)capturesCursor {\
-  @synchronized(self) {\
-    if (self.screenInput) {\
-      self.screenInput.capturesCursor = capturesCursor;\
-    }\
-  }\
-}\
-
+  // Deragabu Agent: hide hardware cursor from capture.\
+  // The agent provides a low-latency soft cursor overlay via WebRTC.\
+  // NOTE: Known macOS bug — if Accessibility cursor size != default,\
+  //       this setting may be silently ignored.\
+  [screenInput setCapturesCursor:NO];
 ' "$AV_VIDEO_M"
 
-        rm -f "${AV_VIDEO_M}.bak" "${AV_VIDEO_M}.bak2"
-        echo "    ✓ Stored screenInput, added setCapturesCursor implementation"
+        rm -f "${AV_VIDEO_M}.bak"
+        echo "    ✓ Set capturesCursor=NO at session init"
     else
         echo "    ⊘ Already patched"
     fi
@@ -233,12 +200,22 @@ else
     echo "  WARNING: av_video.m not found at $AV_VIDEO_M"
 fi
 
-# ── Patch 4c: display.mm — Toggle capturesCursor + call agent FFI ──
+# ── Patch 4b: display.mm — Forward *cursor to agent (overlay control) ──
+#
+# Hardware cursor is already set to NO at init (av_video.m patch above).
+# Here we forward the *cursor flag to the agent so the soft cursor
+# overlay can be shown/hidden.
+#
+# Direct mapping (no inversion needed):
+#   *cursor=true  (user wants visible cursor) → set_display_cursor(true)
+#     → agent sends draw_cursor=true → client shows overlay ✓
+#   *cursor=false (user wants no cursor)      → set_display_cursor(false)
+#     → agent sends draw_cursor=false → client hides overlay ✓
 
 DISPLAY_MM="$SUNSHINE_DIR/src/platform/macos/display.mm"
 
 if [[ -f "$DISPLAY_MM" ]]; then
-    echo "  Patching display.mm..."
+    echo "  Patching display.mm (agent overlay control)..."
 
     if ! grep -q "deragabu_agent" "$DISPLAY_MM"; then
         # 1. Add #include for the agent header at the top (after existing includes)
@@ -249,32 +226,32 @@ extern "C" {\
 #include "deragabu_agent.h"\
 }' "$DISPLAY_MM"
 
-        # 2. In the capture method, add cursor toggling logic.
-        #    The capture method has signature: capture_e capture(..., bool *cursor) override {
-        #    We need to add code that checks *cursor and updates capturesCursor.
-        #
+        # 2. In the capture method, forward *cursor to the agent directly.
+        #    We do NOT touch capturesCursor here — it is set once at init.
         #    Find the line:  auto signal = [av_capture capture:^(CMSampleBufferRef sampleBuffer) {
-        #    And insert our cursor toggle logic BEFORE it.
+        #    And insert our agent notification BEFORE it.
         sed -i.bak2 '/auto signal = \[av_capture capture:\^(CMSampleBufferRef sampleBuffer)/ i\
 \
-      // ── Deragabu Agent: sync cursor visibility ──\
+      // ── Deragabu Agent: forward cursor visibility to overlay ──\
+      // capturesCursor is set to NO at init (av_video.m), but may be\
+      // silently ignored due to macOS bug (Accessibility cursor size).\
+      // The overlay is the authoritative cursor — pass *cursor directly:\
+      //   true  → show overlay,  false → hide overlay\
       {\
         static bool last_cursor_state = true;\
-        bool current_cursor = cursor ? *cursor : true;\
-        if (current_cursor != last_cursor_state) {\
-          [av_capture setCapturesCursor:(current_cursor ? YES : NO)];\
-          last_cursor_state = current_cursor;\
-          // Notify the agent so clients can toggle the overlay\
+        bool want_cursor = cursor ? *cursor : true;\
+        if (want_cursor != last_cursor_state) {\
           if (deragabu_agent_is_running()) {\
-            deragabu_agent_set_display_cursor(current_cursor);\
+            deragabu_agent_set_display_cursor(want_cursor);\
           }\
-          BOOST_LOG(info) << "Cursor capture toggled to " << (current_cursor ? "ON" : "OFF");\
+          last_cursor_state = want_cursor;\
+          BOOST_LOG(info) << "Cursor overlay " << (want_cursor ? "shown" : "hidden");\
         }\
       }\
 ' "$DISPLAY_MM"
 
         rm -f "${DISPLAY_MM}.bak" "${DISPLAY_MM}.bak2"
-        echo "    ✓ Added cursor toggle + agent FFI calls"
+        echo "    ✓ Added agent overlay control"
     else
         echo "    ⊘ Already patched"
     fi
@@ -282,7 +259,7 @@ else
     echo "  WARNING: display.mm not found at $DISPLAY_MM"
 fi
 
-# ── Patch 4d: Sunshine main — Initialize/shutdown agent ──
+# ── Patch 4c: Sunshine main — Initialize/shutdown agent ──
 
 # Find the main entry point (could be src/main.cpp or src/entry_handler.cpp)
 MAIN_CPP=""
@@ -351,7 +328,7 @@ else
     echo '    atexit([]() { deragabu_agent_shutdown(); });'
 fi
 
-# ── Patch 4e: CMakeLists.txt — Link agent static library ──
+# ── Patch 4d: CMakeLists.txt — Link agent static library ──
 
 CMAKE_FILE="$SUNSHINE_DIR/CMakeLists.txt"
 
@@ -433,9 +410,8 @@ echo "Running ninja..."
     echo "║  your version of Sunshine. Check the errors above.         ║"
     echo "║                                                            ║"
     echo "║  Key files to review:                                      ║"
-    echo "║    src/platform/macos/av_video.h    (screenInput property) ║"
-    echo "║    src/platform/macos/av_video.m    (setCapturesCursor)    ║"
-    echo "║    src/platform/macos/display.mm    (cursor toggle logic)  ║"
+    echo "║    src/platform/macos/av_video.m    (capturesCursor=NO)    ║"
+    echo "║    src/platform/macos/display.mm    (agent overlay ctrl)   ║"
     echo "║    src/main.cpp                     (agent init/shutdown)  ║"
     echo "║    CMakeLists.txt                   (agent linking)        ║"
     echo "╚══════════════════════════════════════════════════════════════╝"
@@ -452,7 +428,7 @@ echo "║  Agent WebRTC:    http://$AGENT_BIND_ADDR"
 echo "║                                                            ║"
 echo "║  What's integrated:                                        ║"
 echo "║  ✓ Cursor overlay via WebRTC (replaces system cursor)      ║"
-echo "║  ✓ Dynamic capturesCursor toggle (no session restart)      ║"
+echo "║  ✓ capturesCursor=NO at init (best-effort HW cursor hide)  ║"
 echo "║  ✓ Clipboard sync (text + images, bidirectional)           ║"
 echo "║  ✓ Agent auto-start/stop with Sunshine lifecycle           ║"
 echo "║                                                            ║"

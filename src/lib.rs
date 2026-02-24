@@ -1,5 +1,6 @@
 pub mod clipboard_sync;
 pub mod cursor_capture;
+#[cfg(target_os = "macos")]
 pub mod ffi;
 pub mod sunshine_monitor;
 pub mod webrtc_server;

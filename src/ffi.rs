@@ -93,11 +93,13 @@ pub extern "C" fn deragabu_agent_shutdown() {
     }
 }
 
-/// Push Sunshine's `display_cursor` state into the agent.
+/// Push cursor visibility state into the agent.
 ///
-/// When `display` is `true`, the video stream contains the hardware cursor and
-/// the agent tells clients to hide the overlay.  When `false`, the video stream
-/// has no cursor and the agent tells clients to show the overlay.
+/// When `display` is `true`, the agent tells clients to **show** the overlay
+/// cursor.  When `false`, the agent tells clients to **hide** it.
+///
+/// On macOS (Sunshine integration), call with `*cursor` directly:
+/// user wants cursor → `true` → overlay shown.
 ///
 /// This is safe to call from any thread at any time.
 #[no_mangle]

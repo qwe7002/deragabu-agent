@@ -1405,13 +1405,13 @@ enum MessageType {
             const el = document.getElementById('drawCursorStatus');
             const card = document.getElementById('drawCursorCard');
             if (settings.draw_cursor) {
-                el.innerHTML = '<span style="color:#dc3545;">🖱️ 已繪製</span>';
-                card.style.borderColor = '#dc3545';
-                log('⚙️ Sunshine draw_cursor: 已啟用（光標已在視頻流中繪製）', 'warn');
-            } else {
-                el.innerHTML = '<span style="color:#28a745;">🚫 未繪製</span>';
+                el.innerHTML = '<span style="color:#28a745;">🖱️ 光標顯示</span>';
                 card.style.borderColor = '#28a745';
-                log('⚙️ Sunshine draw_cursor: 已停用（光標不在視頻流中）', 'info');
+                log('⚙️ draw_cursor: 已啟用（Overlay 光標顯示中）', 'info');
+            } else {
+                el.innerHTML = '<span style="color:#dc3545;">🚫 光標隱藏</span>';
+                card.style.borderColor = '#dc3545';
+                log('⚙️ draw_cursor: 已停用（Overlay 光標已隱藏）', 'warn');
             }
         }
 

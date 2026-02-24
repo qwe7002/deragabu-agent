@@ -25,10 +25,11 @@ pub fn get_display_cursor_ffi() -> bool {
     DISPLAY_CURSOR_FFI.load(Ordering::SeqCst)
 }
 
-/// Event emitted when Sunshine settings change
+/// Event emitted when cursor overlay visibility should change.
 #[derive(Clone, Debug)]
 pub struct SunshineSettingsEvent {
-    /// Whether Sunshine's draw_cursor is enabled (cursor rendered in video stream)
+    /// Whether the agent's overlay cursor should be shown to the user.
+    /// `true` = show overlay cursor, `false` = hide overlay cursor.
     pub draw_cursor: bool,
 }
 
