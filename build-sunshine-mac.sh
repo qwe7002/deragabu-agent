@@ -418,111 +418,85 @@ fi
 
 # ── Patch 4b3: macOS input — Fix keyboard modifier (Shift/Ctrl/Alt) propagation ──
 #
-# CGEventCreateKeyboardEvent(nullptr, ...) creates events whose modifier flags
-# only reflect the *calling process* modifier state, not the global HID state.
-# This means that even if a Shift key-down was posted via CGEventPost, the very
-# next key event (e.g. 'a') will NOT automatically have kCGEventFlagMaskShift
-# set — only the Shift key event itself does. Result: Shift+letter produces
-# lowercase, modifier-key combos fail.
+# Two bugs in keyboard_update() when using a reused kb_event object:
 #
-# Fix: add a namespace-scoped atomic modifier tracker that maps each macOS
-# virtual key code (Shift=0x38/0x3C, Ctrl=0x3B/0x3E, Alt=0x3A/0x3D,
-# Cmd=0x37/0x36) to its kCGEventFlagMask* bit, then call CGEventSetFlags on
-# every keyboard CGEvent immediately before CGEventPost.
+# Bug A — Stale keycode in kCGEventFlagsChanged events:
+#   The modifier-key path calls CGEventSetType(kCGEventFlagsChanged) but never
+#   updates kCGKeyboardEventKeycode.  The keycode field holds the last regular
+#   key that was pressed (e.g. kVK_Return after the user hit Enter).  macOS uses
+#   the keycode in FlagsChanged events to identify which modifier changed; a
+#   stale kVK_Return causes the system to treat Return as a held key whenever
+#   a modifier is pressed → "Enter keeps repeating while Shift is held".
+#   Fix: CGEventSetIntegerValueField(keycode, key) in the modifier path.
 #
-# Target file: src/platform/macos/input.cpp
+# Bug B — Missing modifier flags on regular key events:
+#   The regular-key path (kCGEventKeyDown/Up) sets the keycode and type but
+#   never calls CGEventSetFlags.  Accumulated modifier state in kb_flags is
+#   lost → Shift+letter produces lowercase, Ctrl/Alt shortcuts fail.
+#   Fix: CGEventSetFlags(event, kb_flags) in the regular-key path.
+#
+# Target: src/platform/macos/input.cpp  keyboard_update()
 
 if [[ -f "$INPUT_CPP" ]]; then
     echo "  Patching input.cpp (keyboard modifier state tracking)..."
 
     if ! grep -q "DERAGABU_KBD_FIX" "$INPUT_CPP"; then
         python3 -c "
-import re
-
 with open('$INPUT_CPP', 'r') as f:
     content = f.read()
 
-# 1. Inject modifier tracking helpers after the last #include in the file.
-modifier_code = '''
-// DERAGABU_KBD_FIX: Explicit modifier-flag tracking for correct Shift/Ctrl/Alt
-// key injection on macOS.  CGEventCreateKeyboardEvent(nullptr, ...) does not
-// automatically carry the current HID modifier state; we track it manually and
-// call CGEventSetFlags() on every keyboard CGEvent before posting.
-#include <atomic>
-namespace {
-static std::atomic<CGEventFlags> deragabu_kbd_modifiers{0};
-inline void deragabu_update_kbd_modifiers(CGKeyCode key, bool is_release) {
-  static const struct { CGKeyCode k; CGEventFlags f; } kMap[] = {
-    {0x38, kCGEventFlagMaskShift},      // Left Shift
-    {0x3C, kCGEventFlagMaskShift},      // Right Shift
-    {0x3B, kCGEventFlagMaskControl},    // Left Ctrl
-    {0x3E, kCGEventFlagMaskControl},    // Right Ctrl
-    {0x3A, kCGEventFlagMaskAlternate},  // Left Option/Alt
-    {0x3D, kCGEventFlagMaskAlternate},  // Right Option/Alt
-    {0x37, kCGEventFlagMaskCommand},    // Left Command
-    {0x36, kCGEventFlagMaskCommand},    // Right Command
-  };
-  for (const auto& m : kMap) {
-    if (key == m.k) {
-      auto cur = deragabu_kbd_modifiers.load();
-      deragabu_kbd_modifiers.store(is_release ? (cur & ~m.f) : (cur | m.f));
-      return;
+results = []
+
+# Fix 1: Modifier key path (kCGEventFlagsChanged) — CGEventSetType changes the
+# event type but never updates kCGKeyboardEventKeycode.  The keycode field retains
+# whatever was set by the last regular keypress (e.g. kVK_Return).  The system
+# receives a kCGEventFlagsChanged event whose keycode identifies which modifier
+# changed — if it is stale (e.g. Return), macOS misinterprets the event and
+# acts as if Return is being held while the modifier changes.
+# Fix: set the modifier key's own keycode before posting.
+old1 = '''      macos_input->kb_flags = release ? macos_input->kb_flags & ~mask : macos_input->kb_flags | mask;
+      CGEventSetType(event, kCGEventFlagsChanged);
+      CGEventSetFlags(event, macos_input->kb_flags);'''
+
+new1 = '''      macos_input->kb_flags = release ? macos_input->kb_flags & ~mask : macos_input->kb_flags | mask;
+      CGEventSetType(event, kCGEventFlagsChanged);
+      CGEventSetIntegerValueField(event, kCGKeyboardEventKeycode, key); // DERAGABU_KBD_FIX: set modifier key's own keycode in FlagsChanged event
+      CGEventSetFlags(event, macos_input->kb_flags);'''
+
+if old1 in content:
+    content = content.replace(old1, new1, 1)
+    results.append('Fix1: modifier keycode set in FlagsChanged event')
+else:
+    results.append('WARNING Fix1: modifier-key pattern not found')
+
+# Fix 2: Regular key path (kCGEventKeyDown/Up) — CGEventSetType does not carry
+# over the modifier flags accumulated in kb_flags, so Shift+letter produces
+# lowercase, Ctrl+key shortcuts fail, etc.
+# Fix: add CGEventSetFlags to propagate the current modifier state.
+old2 = '''      CGEventSetIntegerValueField(event, kCGKeyboardEventKeycode, key);
+      CGEventSetType(event, release ? kCGEventKeyUp : kCGEventKeyDown);
     }
-  }
-}
-} // anonymous namespace
-'''
 
-all_includes = list(re.finditer(r'^#include\b[^\n]*\n', content, re.MULTILINE))
-insert_pos = all_includes[-1].end() if all_includes else 0
-content = content[:insert_pos] + modifier_code + content[insert_pos:]
+    CGEventPost(kCGHIDEventTap, event);'''
 
-# 2. For each CGEventCreateKeyboardEvent that is (within ~600 chars)
-#    followed by CGEventPost(kCGHIDEventTap, <same_var>), inject:
-#      deragabu_update_kbd_modifiers(keyVar, !(downExpr));
-#      CGEventSetFlags(var, deragabu_kbd_modifiers.load());
-#    immediately before the CGEventPost.  This updates the modifier-flag
-#    tracker for modifier keys, and applies the accumulated flags to every key.
+new2 = '''      CGEventSetIntegerValueField(event, kCGKeyboardEventKeycode, key);
+      CGEventSetType(event, release ? kCGEventKeyUp : kCGEventKeyDown);
+      CGEventSetFlags(event, macos_input->kb_flags); // DERAGABU_KBD_FIX: propagate Shift/Ctrl/Alt/Cmd to regular key events
+    }
 
-injections = {}
+    CGEventPost(kCGHIDEventTap, event);'''
 
-kbd_re = re.compile(
-    r'(\s*)((?:auto|CGEventRef)\s+(\w+)\s*=\s*CGEventCreateKeyboardEvent'
-    r'\s*\([^,]+,\s*(\w+)\s*,\s*([^,)]+?)\s*\)\s*;)'
-)
-
-for m in kbd_re.finditer(content):
-    indent    = m.group(1).lstrip('\n')
-    var_name  = m.group(3)
-    key_var   = m.group(4)
-    down_expr = m.group(5).strip()
-
-    search_start = m.end()
-    search_area  = content[search_start:search_start + 600]
-
-    post_re = re.compile(
-        r'CGEventPost\s*\(\s*kCGHIDEventTap\s*,\s*' + re.escape(var_name) + r'\s*\)'
-    )
-    pm = post_re.search(search_area)
-    if pm:
-        inject_pos  = search_start + pm.start()
-        inject_code = (
-            indent + '  deragabu_update_kbd_modifiers(' + key_var +
-            ', !(' + down_expr + ')); // DERAGABU_KBD_FIX\n' +
-            indent + '  CGEventSetFlags(' + var_name +
-            ', deragabu_kbd_modifiers.load()); // DERAGABU_KBD_FIX\n' +
-            indent + '  '
-        )
-        injections[inject_pos] = inject_code
-
-# Apply injections from end to start to preserve earlier positions.
-for pos in sorted(injections.keys(), reverse=True):
-    content = content[:pos] + injections[pos] + content[pos:]
+if old2 in content:
+    content = content.replace(old2, new2, 1)
+    results.append('Fix2: modifier flags propagated to regular key events')
+else:
+    results.append('WARNING Fix2: regular-key pattern not found')
 
 with open('$INPUT_CPP', 'w') as f:
     f.write(content)
 
-print('Patched ' + str(len(injections)) + ' keyboard CGEventPost site(s)')
+for r in results:
+    print(r)
 "
         echo "    ✓ Keyboard modifier state tracking added"
     else
