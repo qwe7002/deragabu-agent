@@ -137,6 +137,14 @@ const BITMAP_INFO_RGBA_PREMUL: u32 = 1; // kCGImageAlphaPremultipliedLast
 /// Last cursor seed for detecting changes
 static LAST_CURSOR_SEED: Mutex<c_int> = Mutex::new(-1);
 
+/// Consecutive invisible poll count for debouncing CGCursorIsVisible()
+static INVISIBLE_COUNT: Mutex<u32> = Mutex::new(0);
+
+/// Number of consecutive invisible polls before emitting CursorHidden.
+/// At 60 fps (~16 ms), 10 polls ≈ 160 ms – long enough to ride out
+/// transient "invisible" blips from CGCursorIsVisible().
+const INVISIBLE_THRESHOLD: u32 = 10;
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /// Get system DPI scale factor (Retina = 2.0, non-Retina = 1.0).
@@ -355,17 +363,30 @@ fn bilinear_scale(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
 /// Capture current cursor and return event if changed.
 fn capture_cursor() -> Result<Option<CursorEvent>> {
     unsafe {
-        // Check cursor visibility (deprecated since 10.9 but still functional)
+        // Check cursor visibility with debouncing.
+        // CGCursorIsVisible() is deprecated (10.9+) and can return false
+        // transiently – e.g. during display-space switches, trackpad
+        // gestures, or when the pointer moves between monitors.  We
+        // only emit CursorHidden after INVISIBLE_THRESHOLD consecutive
+        // invisible polls to avoid flicker.
         if !CGCursorIsVisible() {
-            let mut last_id = LAST_CURSOR_ID.lock().unwrap();
-            if last_id.is_some() {
-                *last_id = None;
-                *LAST_CURSOR_SEED.lock().unwrap() = -1;
-                debug!("Cursor hidden");
-                return Ok(Some(CursorEvent::CursorHidden));
+            let mut count = INVISIBLE_COUNT.lock().unwrap();
+            *count = count.saturating_add(1);
+
+            if *count >= INVISIBLE_THRESHOLD {
+                let mut last_id = LAST_CURSOR_ID.lock().unwrap();
+                if last_id.is_some() {
+                    *last_id = None;
+                    *LAST_CURSOR_SEED.lock().unwrap() = -1;
+                    debug!("Cursor hidden (after {} invisible polls)", *count);
+                    return Ok(Some(CursorEvent::CursorHidden));
+                }
             }
             return Ok(None);
         }
+
+        // Cursor is visible – reset the invisible debounce counter
+        *INVISIBLE_COUNT.lock().unwrap() = 0;
 
         // Check cursor seed for changes
         let seed = CGSCurrentCursorSeed();
