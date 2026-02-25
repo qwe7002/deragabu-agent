@@ -65,27 +65,17 @@ pub fn get_cached_cursor(cursor_id: &str) -> Option<CachedCursor> {
     cache_guard.as_ref()?.get(cursor_id).cloned()
 }
 
-/// Create a CursorMessage with the cursor image for a specific client DPR.
-/// The WebP data is pre-encoded (static or animated); client uses CSS scaling.
-pub fn create_scaled_cursor_message(cursor_id: &str, client_dpr: f32) -> Option<CursorMessage> {
+/// Create a CursorMessage with the cursor image.
+/// The WebP data is pre-encoded at the server's backing-store pixel resolution.
+/// We send the actual image pixel dimensions and the server's DPI scale.
+/// The server's physical display resolution is sent separately via SettingsData.
+pub fn create_scaled_cursor_message(cursor_id: &str, _client_dpr: f32) -> Option<CursorMessage> {
     let cached = get_cached_cursor(cursor_id)?;
     let server_scale = get_dpi_scale();
-    let scale_factor = client_dpr / server_scale;
-
-    // Compute target dimensions for client-side CSS scaling
-    let (target_w, target_h, target_hx, target_hy) = if (scale_factor - 1.0).abs() < 0.01 {
-        (cached.width, cached.height, cached.hotspot_x, cached.hotspot_y)
-    } else {
-        let target_w = (cached.width as f32 * scale_factor).round().max(1.0) as u32;
-        let target_h = (cached.height as f32 * scale_factor).round().max(1.0) as u32;
-        let target_hx = (cached.hotspot_x as f32 * scale_factor).round() as i32;
-        let target_hy = (cached.hotspot_y as f32 * scale_factor).round() as i32;
-        (target_w, target_h, target_hx, target_hy)
-    };
 
     debug!(
-        "Cursor message: id={}, {}x{} (client_dpr={:.2}, server_scale={:.2}), webp={} bytes, animated={}, frames={}",
-        cached.id, target_w, target_h, client_dpr, server_scale,
+        "Cursor message: id={}, {}x{} (server_scale={:.2}), webp={} bytes, animated={}, frames={}",
+        cached.id, cached.width, cached.height, server_scale,
         cached.webp_data.len(), cached.is_animated, cached.frame_count
     );
 
@@ -94,11 +84,11 @@ pub fn create_scaled_cursor_message(cursor_id: &str, client_dpr: f32) -> Option<
         payload: Some(Payload::CursorData(CursorData {
             cursor_id: cached.id.clone(),
             image_data: cached.webp_data.clone(),
-            width: target_w as i32,
-            height: target_h as i32,
-            hotspot_x: target_hx,
-            hotspot_y: target_hy,
-            dpi_scale: client_dpr,
+            width: cached.width as i32,
+            height: cached.height as i32,
+            hotspot_x: cached.hotspot_x,
+            hotspot_y: cached.hotspot_y,
+            dpi_scale: server_scale,
             is_animated: cached.is_animated,
             frame_delay_ms: cached.frame_delay_ms,
         })),

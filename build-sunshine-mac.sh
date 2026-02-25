@@ -155,8 +155,73 @@ PATCH_MARKER="$SUNSHINE_DIR/.deragabu-patched"
 
 if [[ -f "$PATCH_MARKER" ]]; then
     echo "Sunshine already patched (found marker). Reverting first..."
-    (cd "$SUNSHINE_DIR" && git checkout -- src/ 2>/dev/null || true)
+    (cd "$SUNSHINE_DIR" && git checkout -- src/ cmake/ CMakeLists.txt 2>/dev/null || true)
     rm -f "$PATCH_MARKER"
+fi
+
+# ── Patch 4-pre: cmake/dependencies/common.cmake — Add Homebrew include paths ──
+#
+# Sunshine's CMakeLists links ${OPENSSL_LIBRARIES} and opus but never adds
+# their include directories to the search path.  On Linux this is fine
+# (headers in /usr/include), but on macOS with Homebrew the headers are
+# at non-standard locations (e.g. /opt/homebrew/opt/openssl@3/include,
+# /opt/homebrew/opt/opus/include).
+
+DEPS_CMAKE="$SUNSHINE_DIR/cmake/dependencies/common.cmake"
+if [[ -f "$DEPS_CMAKE" ]]; then
+    echo "  Patching cmake/dependencies/common.cmake (Homebrew include paths)..."
+    if ! grep -q "OPENSSL_INCLUDE_DIR" "$DEPS_CMAKE"; then
+        # Add OpenSSL include path after find_package(OpenSSL)
+        sed -i.bak '/^find_package(OpenSSL REQUIRED)/ a\
+include_directories(SYSTEM ${OPENSSL_INCLUDE_DIR})
+' "$DEPS_CMAKE"
+        rm -f "${DEPS_CMAKE}.bak"
+        echo "    ✓ Added OpenSSL include path"
+    else
+        echo "    ⊘ OpenSSL include already patched"
+    fi
+
+    # Add opus include path (Homebrew puts it outside the default search path).
+    # NOTE: opus.pc sets Cflags to -I.../include/opus, but the source code
+    # uses #include <opus/opus_multistream.h>, so we need the *parent* dir.
+    if ! grep -q "pkg_check_modules.*OPUS" "$DEPS_CMAKE"; then
+        sed -i.bak '/^pkg_check_modules(CURL REQUIRED libcurl)/ a\
+pkg_check_modules(OPUS REQUIRED opus)\
+# opus.pc Cflags points to .../include/opus but code uses #include <opus/...>\
+# so add the parent directory to the include path\
+foreach(_opus_inc ${OPUS_INCLUDE_DIRS})\
+  get_filename_component(_opus_parent "${_opus_inc}" DIRECTORY)\
+  include_directories(SYSTEM "${_opus_parent}")\
+endforeach()
+' "$DEPS_CMAKE"
+        rm -f "${DEPS_CMAKE}.bak"
+        echo "    ✓ Added opus pkg-config + include path (parent of pkg-config dir)"
+    else
+        echo "    ⊘ Opus include already patched"
+    fi
+else
+    echo "  WARNING: cmake/dependencies/common.cmake not found"
+fi
+
+# ── Patch 4-pre-b: constants.cmake — Respect SUNSHINE_ENABLE_TRAY=OFF ──
+#
+# constants.cmake unconditionally sets SUNSHINE_TRAY=1 via plain set(),
+# which overrides any -DSUNSHINE_TRAY=0 passed on the cmake command line.
+# On Linux, compile_definitions/linux.cmake conditionally resets it to 0,
+# but macOS has no such logic. Patch constants.cmake to check the option.
+
+CONSTANTS_CMAKE="$SUNSHINE_DIR/cmake/prep/constants.cmake"
+if [[ -f "$CONSTANTS_CMAKE" ]]; then
+    echo "  Patching constants.cmake (respect SUNSHINE_ENABLE_TRAY)..."
+    if ! grep -q "SUNSHINE_ENABLE_TRAY" "$CONSTANTS_CMAKE"; then
+        sed -i.bak 's/^set(SUNSHINE_TRAY 1)/if(SUNSHINE_ENABLE_TRAY)\n  set(SUNSHINE_TRAY 1)\nelse()\n  set(SUNSHINE_TRAY 0)\nendif()/' "$CONSTANTS_CMAKE"
+        rm -f "${CONSTANTS_CMAKE}.bak"
+        echo "    ✓ SUNSHINE_TRAY now respects SUNSHINE_ENABLE_TRAY"
+    else
+        echo "    ⊘ Already patched"
+    fi
+else
+    echo "  WARNING: constants.cmake not found"
 fi
 
 # ── Patch 4a: av_video.m — Set capturesCursor=NO at session init ──
@@ -228,27 +293,41 @@ extern "C" {\
 
         # 2. In the capture method, forward *cursor to the agent directly.
         #    We do NOT touch capturesCursor here — it is set once at init.
-        #    Find the line:  auto signal = [av_capture capture:^(CMSampleBufferRef sampleBuffer) {
-        #    And insert our agent notification BEFORE it.
-        sed -i.bak2 '/auto signal = \[av_capture capture:\^(CMSampleBufferRef sampleBuffer)/ i\
-\
-      // ── Deragabu Agent: forward cursor visibility to overlay ──\
-      // capturesCursor is set to NO at init (av_video.m), but may be\
-      // silently ignored due to macOS bug (Accessibility cursor size).\
-      // The overlay is the authoritative cursor — pass *cursor directly:\
-      //   true  → show overlay,  false → hide overlay\
-      {\
-        static bool last_cursor_state = true;\
-        bool want_cursor = cursor ? *cursor : true;\
-        if (want_cursor != last_cursor_state) {\
-          if (deragabu_agent_is_running()) {\
-            deragabu_agent_set_display_cursor(want_cursor);\
-          }\
-          last_cursor_state = want_cursor;\
-          BOOST_LOG(info) << "Cursor overlay " << (want_cursor ? "shown" : "hidden");\
-        }\
-      }\
-' "$DISPLAY_MM"
+        #    The pattern "auto signal = [av_capture capture:..." appears twice:
+        #      - In capture() method (has bool *cursor param) — patch here
+        #      - In dummy_img() method (no cursor param) — skip
+        #    Use Python to patch only the first occurrence.
+        python3 -c "
+import re, sys
+with open('$DISPLAY_MM', 'r') as f:
+    content = f.read()
+target = 'auto signal = [av_capture capture:^(CMSampleBufferRef sampleBuffer) {'
+patch = '''
+      // ── Deragabu Agent: forward cursor visibility to overlay ──
+      // capturesCursor is set to NO at init (av_video.m), but may be
+      // silently ignored due to macOS bug (Accessibility cursor size).
+      // The overlay is the authoritative cursor — pass *cursor directly:
+      //   true  → show overlay,  false → hide overlay
+      {
+        static bool last_cursor_state = true;
+        bool want_cursor = cursor ? *cursor : true;
+        if (want_cursor != last_cursor_state) {
+          if (deragabu_agent_is_running()) {
+            deragabu_agent_set_display_cursor(want_cursor);
+          }
+          last_cursor_state = want_cursor;
+          BOOST_LOG(info) << \"Cursor overlay \" << (want_cursor ? \"shown\" : \"hidden\");
+        }
+      }
+
+'''
+# Replace only the first occurrence
+idx = content.find(target)
+if idx >= 0:
+    content = content[:idx] + patch + content[idx:]
+with open('$DISPLAY_MM', 'w') as f:
+    f.write(content)
+"
 
         rm -f "${DISPLAY_MM}.bak" "${DISPLAY_MM}.bak2"
         echo "    ✓ Added agent overlay control"
@@ -287,35 +366,42 @@ extern "C" {\
 #endif\
 ' "$MAIN_CPP"
 
-        # Try to find main() or the entry function and add init after first {
-        # This is a best-effort patch — may need manual adjustment
+        # Insert agent init/shutdown after the opening brace of main().
+        # Handles both styles:
+        #   int main(...) {          (brace on same line)
+        #   int main(...)\n{         (brace on next line)
         if grep -q "int main(" "$MAIN_CPP"; then
-            sed -i.bak2 '/int main(/ {
-                n
-                /^{/ a\
-\
-  // Initialize deragabu-agent (cursor overlay + clipboard sync)\
-  #ifdef __APPLE__\
-  if (deragabu_agent_init("'"$AGENT_BIND_ADDR"'") != 0) {\
-    BOOST_LOG(warning) << "Failed to initialize deragabu agent";\
-  }\
-  #endif\
-
-            }' "$MAIN_CPP"
-
-            # Add shutdown before return in main
-            # This is best-effort — add atexit instead for robustness
-            sed -i.bak3 '/int main(/ {
-                n
-                /^{/ a\
-  #ifdef __APPLE__\
-  atexit([]() { deragabu_agent_shutdown(); });\
-  #endif\
-
-            }' "$MAIN_CPP"
+            awk '
+            /int main\(/ && !done {
+                print
+                # If { is on the same line, insert after this line
+                if ($0 ~ /{/) {
+                    found_brace = 1
+                } else {
+                    # Read next line — it should be the opening {
+                    getline nextline
+                    print nextline
+                    if (nextline ~ /{/) {
+                        found_brace = 1
+                    }
+                }
+                if (found_brace) {
+                    print ""
+                    print "  // Initialize deragabu-agent (cursor overlay + clipboard sync)"
+                    print "  #ifdef __APPLE__"
+                    print "  if (deragabu_agent_init(\"'"$AGENT_BIND_ADDR"'\") != 0) {"
+                    print "    BOOST_LOG(warning) << \"Failed to initialize deragabu agent\";"
+                    print "  }"
+                    print "  atexit([]() { deragabu_agent_shutdown(); });"
+                    print "  #endif"
+                    print ""
+                    done = 1
+                }
+                next
+            }
+            { print }
+            ' "$MAIN_CPP" > "${MAIN_CPP}.patched" && mv "${MAIN_CPP}.patched" "$MAIN_CPP"
         fi
-
-        rm -f "${MAIN_CPP}.bak" "${MAIN_CPP}.bak2" "${MAIN_CPP}.bak3"
         echo "    ✓ Added agent init/shutdown"
     else
         echo "    ⊘ Already patched"
@@ -369,6 +455,20 @@ if(APPLE)
       resolv
     )
     target_include_directories(sunshine PRIVATE "\${DERAGABU_AGENT_INCLUDE}")
+
+    # Also configure the test target if it exists
+    if(TARGET test_sunshine)
+      target_link_libraries(test_sunshine
+        deragabu_agent
+        "-framework CoreGraphics"
+        "-framework CoreFoundation"
+        "-framework Security"
+        "-framework SystemConfiguration"
+        "-framework IOKit"
+        resolv
+      )
+      target_include_directories(test_sunshine PRIVATE "\${DERAGABU_AGENT_INCLUDE}")
+    endif()
   else()
     message(WARNING "Deragabu Agent library not found at \${DERAGABU_AGENT_LIB}")
   endif()
@@ -406,6 +506,14 @@ fi
 HOMEBREW_PREFIX="$(brew --prefix 2>/dev/null || echo "/opt/homebrew")"
 echo "  Homebrew prefix: $HOMEBREW_PREFIX"
 
+# Ensure Homebrew node/npm are used (version managers like nvm/nvs may provide
+# an older Node.js that is incompatible with Vite/modern npm).
+HOMEBREW_NODE_BIN="${HOMEBREW_PREFIX}/opt/node/bin"
+if [[ -d "$HOMEBREW_NODE_BIN" ]]; then
+    export PATH="${HOMEBREW_NODE_BIN}:${PATH}"
+    echo "  Using Homebrew Node.js: $(node --version 2>/dev/null)"
+fi
+
 # Resolve Homebrew OpenSSL path — macOS does not ship OpenSSL headers.
 OPENSSL_ROOT="$(brew --prefix openssl@3 2>/dev/null || brew --prefix openssl 2>/dev/null || echo "")"
 if [[ -n "$OPENSSL_ROOT" && -d "$OPENSSL_ROOT" ]]; then
@@ -426,7 +534,6 @@ fi
 (cd "$SUNSHINE_DIR" && \
     cmake -B build -G Ninja -S . \
         -DCMAKE_BUILD_TYPE=Release \
-        -DSUNSHINE_ENABLE_TRAY=OFF \
         ${MACOS_SDK:+-DCMAKE_OSX_SYSROOT="$MACOS_SDK"} \
         -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX" \
         ${OPENSSL_ROOT:+-DOPENSSL_ROOT_DIR="$OPENSSL_ROOT"} \

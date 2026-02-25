@@ -14,6 +14,7 @@ use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::WindowsAndMessaging::{
     CopyIcon, DestroyIcon, DrawIconEx, GetCursorInfo, GetCursorPos, GetIconInfo,
     GetSystemMetrics, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, HCURSOR, HICON, ICONINFO,
+    SM_CXSCREEN, SM_CYSCREEN,
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 

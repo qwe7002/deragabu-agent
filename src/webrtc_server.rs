@@ -520,6 +520,7 @@ async fn send_settings_event(
         r#type: MessageType::Settings.into(),
         payload: Some(Payload::SettingsData(SettingsData {
             draw_cursor: event.draw_cursor,
+            ..Default::default()
         })),
         timestamp: now_ms(),
     };

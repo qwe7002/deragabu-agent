@@ -939,6 +939,7 @@
         let currentScale = 2;
         let showCrosshair = false;
 
+
         let CursorMessage = null;
         let MessageType = null;
         let ClipboardContentType = null;
@@ -1247,14 +1248,19 @@ enum MessageType {
 
         function displayCursor(imageUrl, cursorInfo, isFull, dataSize) {
             const display = document.getElementById('cursorDisplay');
-            const dpr = cursorInfo.dpi_scale || window.devicePixelRatio || 1;
 
-            // The server already scaled the image for our DPR.
-            // Display at CSS size = pixel size / DPR for pixel-perfect rendering.
-            const cssWidth = cursorInfo.width / dpr;
-            const cssHeight = cursorInfo.height / dpr;
-            const hotspotX = cursorInfo.hotspot_x / dpr;
-            const hotspotY = cursorInfo.hotspot_y / dpr;
+            // dpi_scale is the server's DPI ratio (e.g. 2.0 for Retina).
+            // The cursor image is at physical pixel resolution.
+            // Logical cursor size = pixel size / dpi_scale.
+            const imgW  = cursorInfo.width;
+            const imgH  = cursorInfo.height;
+            const dpi   = cursorInfo.dpi_scale || 1;
+
+            // CSS size = physical pixels / DPI scale (logical size)
+            const cssWidth  = imgW / dpi;
+            const cssHeight = imgH / dpi;
+            const hotspotX  = cursorInfo.hotspot_x / dpi;
+            const hotspotY  = cursorInfo.hotspot_y / dpi;
 
             let html = `
                 <div class="cursor-wrapper">
@@ -1290,7 +1296,7 @@ enum MessageType {
                 </div>
                 <div>
                     <div class="info-item-label">CSS 尺寸</div>
-                    <div class="info-item-value">${cssWidth.toFixed(0)} × ${cssHeight.toFixed(0)} px</div>
+                    <div class="info-item-value">${cssWidth.toFixed(1)} × ${cssHeight.toFixed(1)} px</div>
                 </div>
                 <div>
                     <div class="info-item-label">热点</div>
@@ -1298,7 +1304,7 @@ enum MessageType {
                 </div>
                 <div>
                     <div class="info-item-label">DPI 缩放</div>
-                    <div class="info-item-value"><span class="badge badge-info">${dpr.toFixed(2)}</span></div>
+                    <div class="info-item-value"><span class="badge badge-info">${dpi.toFixed(2)}</span></div>
                 </div>
                 <div>
                     <div class="info-item-label">状态</div>

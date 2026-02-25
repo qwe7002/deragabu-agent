@@ -196,8 +196,34 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
             return Err(anyhow!("CGSGetGlobalCursorData failed (error={})", err));
         }
 
-        let width = rect.size.width as u32;
-        let height = rect.size.height as u32;
+        let bytes_per_pixel = ((components * bits_per_component + 7) / 8) as usize;
+
+        // Derive ACTUAL pixel dimensions from the data buffer layout.
+        // On macOS Retina, rect.size may report logical-point dimensions
+        // while the pixel data is at the display's backing scale (2x).
+        // row_bytes / bpp gives the true pixel width per row.
+        let rect_w = rect.size.width as u32;
+        let rect_h = rect.size.height as u32;
+
+        let (width, height) = if bytes_per_pixel > 0 && row_bytes > 0 {
+            let pixel_w = (row_bytes as u32) / (bytes_per_pixel as u32);
+            let pixel_h = if row_bytes > 0 {
+                (actual_size as u32) / (row_bytes as u32)
+            } else {
+                rect_h
+            };
+
+            if pixel_w != rect_w || pixel_h != rect_h {
+                info!(
+                    "CGS rect {}x{} differs from buffer {}x{} (row_bytes={}, bpp={}, data_size={}). Using buffer dimensions.",
+                    rect_w, rect_h, pixel_w, pixel_h,
+                    row_bytes, bytes_per_pixel, actual_size
+                );
+            }
+            (pixel_w, pixel_h)
+        } else {
+            (rect_w, rect_h)
+        };
 
         if width == 0 || height == 0 {
             return Err(anyhow!("Cursor has zero dimensions ({}x{})", width, height));
@@ -205,12 +231,23 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
 
         let hotspot_x = hotspot.x as i32;
         let hotspot_y = hotspot.y as i32;
-        let bytes_per_pixel = ((components * bits_per_component + 7) / 8) as usize;
 
-        debug!(
-            "macOS cursor: {}x{}, depth={}, comp={}, bpc={}, row_bytes={}, bpp={}, hotspot=({},{})",
-            width, height, depth, components, bits_per_component,
-            row_bytes, bytes_per_pixel, hotspot_x, hotspot_y
+        // Scale hotspot if the pixel dimensions differ from rect (logical) dimensions.
+        // If rect is in logical points and pixels are 2x, hotspot from CGS is in
+        // logical coords and must be scaled up to match the pixel image.
+        let (hotspot_x, hotspot_y) = if rect_w > 0 && rect_w != width {
+            let sx = width as f64 / rect_w as f64;
+            let sy = height as f64 / rect_h.max(1) as f64;
+            ((hotspot_x as f64 * sx).round() as i32,
+             (hotspot_y as f64 * sy).round() as i32)
+        } else {
+            (hotspot_x, hotspot_y)
+        };
+
+        info!(
+            "macOS cursor: {}x{} px (rect {}x{}), depth={}, comp={}, bpc={}, row_bytes={}, bpp={}, hotspot=({},{}), data_size={}",
+            width, height, rect_w, rect_h, depth, components, bits_per_component,
+            row_bytes, bytes_per_pixel, hotspot_x, hotspot_y, actual_size
         );
 
         // Step 3 – convert from premultiplied ARGB (BGRA in LE memory) → straight RGBA
