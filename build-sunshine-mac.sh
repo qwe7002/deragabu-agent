@@ -755,7 +755,7 @@ fi
         ${OPENSSL_ROOT:+-DOPENSSL_CRYPTO_LIBRARY="$OPENSSL_ROOT/lib/libcrypto.dylib"} \
         ${OPENSSL_ROOT:+-DOPENSSL_SSL_LIBRARY="$OPENSSL_ROOT/lib/libssl.dylib"} \
         2>&1
-)ss
+)
 
 echo ""
 echo "Running ninja..."
