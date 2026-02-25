@@ -214,7 +214,7 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
             };
 
             if pixel_w != rect_w || pixel_h != rect_h {
-                info!(
+                debug!(
                     "CGS rect {}x{} differs from buffer {}x{} (row_bytes={}, bpp={}, data_size={}). Using buffer dimensions.",
                     rect_w, rect_h, pixel_w, pixel_h,
                     row_bytes, bytes_per_pixel, actual_size
@@ -244,7 +244,7 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
             (hotspot_x, hotspot_y)
         };
 
-        info!(
+        debug!(
             "macOS cursor: {}x{} px (rect {}x{}), depth={}, comp={}, bpc={}, row_bytes={}, bpp={}, hotspot=({},{}), data_size={}",
             width, height, rect_w, rect_h, depth, components, bits_per_component,
             row_bytes, bytes_per_pixel, hotspot_x, hotspot_y, actual_size
@@ -291,17 +291,48 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
             }
         }
 
-        // Step 4 – hash, encode, cache
-        let cursor_id = format!("cur_{}", &blake3::hash(&rgba).to_hex()[..12]);
-        let webp_data = encode_static_webp(&rgba, width, height)?;
+        // Step 4 – upscale to display resolution, hash, encode, cache
+        //
+        // macOS CGS returns cursor pixel data at 1× (point) resolution.
+        // We scale it up by the display's backing-store factor using
+        // nearest-neighbour so the WebP image is crisp at the size the
+        // client will actually render (width × DPI).
+        let dpi = get_dpi_scale();
+        let scale = dpi.round() as u32; // 1 or 2
+        let (final_rgba, final_w, final_h, final_hx, final_hy) = if scale > 1 {
+            let sw = width * scale;
+            let sh = height * scale;
+            let mut scaled = vec![0u8; (sw * sh * 4) as usize];
+            for y in 0..sh {
+                for x in 0..sw {
+                    let src_x = x / scale;
+                    let src_y = y / scale;
+                    let si = (src_y * width + src_x) as usize * 4;
+                    let di = (y * sw + x) as usize * 4;
+                    scaled[di..di + 4].copy_from_slice(&rgba[si..si + 4]);
+                }
+            }
+            let shx = hotspot_x * scale as i32;
+            let shy = hotspot_y * scale as i32;
+            debug!(
+                "Upscaled cursor {}x{} -> {}x{} (DPI scale {})",
+                width, height, sw, sh, scale
+            );
+            (scaled, sw, sh, shx, shy)
+        } else {
+            (rgba.clone(), width, height, hotspot_x, hotspot_y)
+        };
+
+        let cursor_id = format!("cur_{}", &blake3::hash(&final_rgba).to_hex()[..12]);
+        let webp_data = encode_static_webp(&final_rgba, final_w, final_h)?;
 
         let cached = CachedCursor {
             id: cursor_id,
             webp_data,
-            width,
-            height,
-            hotspot_x,
-            hotspot_y,
+            width: final_w,
+            height: final_h,
+            hotspot_x: final_hx,
+            hotspot_y: final_hy,
             is_animated: false,
             frame_count: 1,
             frame_delay_ms: 0,

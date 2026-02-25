@@ -66,36 +66,19 @@ pub fn get_cached_cursor(cursor_id: &str) -> Option<CachedCursor> {
 }
 
 /// Create a CursorMessage with the cursor image.
-/// The WebP data is pre-encoded at the server's backing-store pixel resolution.
-/// Width/height/hotspot are pre-scaled to **logical** dimensions (physical ÷ DPI)
-/// so the client can use them directly without needing the server's display info.
-/// `dpi_scale` is set to 1.0 because all scaling is already applied.
+///
+/// The cached cursor is already at the final display-pixel resolution:
+/// - macOS: CGS 1× data upscaled by DPI in `capture_cursor()`.
+/// - Other platforms: physical-pixel data as-is.
+///
+/// Width/height/hotspot are sent as-is. `dpi_scale` is set to 1.0
+/// because the image already matches the intended display size.
 pub fn create_scaled_cursor_message(cursor_id: &str, _client_dpr: f32) -> Option<CursorMessage> {
     let cached = get_cached_cursor(cursor_id)?;
-    let server_scale = get_dpi_scale();
-
-    // Pre-scale to logical dimensions so the client doesn't need display info.
-    // macOS CGS returns cursor data at 1x resolution; multiply by DPI to get
-    // the actual logical size as it appears on screen.
-    // Other platforms return physical-pixel data; divide by DPI to get logical.
-    #[cfg(target_os = "macos")]
-    let (logical_w, logical_h, logical_hx, logical_hy) = (
-        ((cached.width as f32) * server_scale).round() as i32,
-        ((cached.height as f32) * server_scale).round() as i32,
-        ((cached.hotspot_x as f32) * server_scale).round() as i32,
-        ((cached.hotspot_y as f32) * server_scale).round() as i32,
-    );
-    #[cfg(not(target_os = "macos"))]
-    let (logical_w, logical_h, logical_hx, logical_hy) = (
-        ((cached.width as f32) / server_scale).round() as i32,
-        ((cached.height as f32) / server_scale).round() as i32,
-        ((cached.hotspot_x as f32) / server_scale).round() as i32,
-        ((cached.hotspot_y as f32) / server_scale).round() as i32,
-    );
 
     debug!(
-        "Cursor message: id={}, {}x{} phys -> {}x{} logical (scale={:.2}), webp={} bytes, animated={}, frames={}",
-        cached.id, cached.width, cached.height, logical_w, logical_h, server_scale,
+        "Cursor message: id={}, {}x{}, webp={} bytes, animated={}, frames={}",
+        cached.id, cached.width, cached.height,
         cached.webp_data.len(), cached.is_animated, cached.frame_count
     );
 
@@ -104,10 +87,10 @@ pub fn create_scaled_cursor_message(cursor_id: &str, _client_dpr: f32) -> Option
         payload: Some(Payload::CursorData(CursorData {
             cursor_id: cached.id.clone(),
             image_data: cached.webp_data.clone(),
-            width: logical_w,
-            height: logical_h,
-            hotspot_x: logical_hx,
-            hotspot_y: logical_hy,
+            width: cached.width as i32,
+            height: cached.height as i32,
+            hotspot_x: cached.hotspot_x,
+            hotspot_y: cached.hotspot_y,
             dpi_scale: 1.0,
             is_animated: cached.is_animated,
             frame_delay_ms: cached.frame_delay_ms,
