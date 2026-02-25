@@ -416,6 +416,122 @@ else
     echo "    Key: CGEventCreateScrollWheelEvent should use kCGScrollEventUnitPixel"
 fi
 
+# ── Patch 4b3: macOS input — Fix keyboard modifier (Shift/Ctrl/Alt) propagation ──
+#
+# CGEventCreateKeyboardEvent(nullptr, ...) creates events whose modifier flags
+# only reflect the *calling process* modifier state, not the global HID state.
+# This means that even if a Shift key-down was posted via CGEventPost, the very
+# next key event (e.g. 'a') will NOT automatically have kCGEventFlagMaskShift
+# set — only the Shift key event itself does. Result: Shift+letter produces
+# lowercase, modifier-key combos fail.
+#
+# Fix: add a namespace-scoped atomic modifier tracker that maps each macOS
+# virtual key code (Shift=0x38/0x3C, Ctrl=0x3B/0x3E, Alt=0x3A/0x3D,
+# Cmd=0x37/0x36) to its kCGEventFlagMask* bit, then call CGEventSetFlags on
+# every keyboard CGEvent immediately before CGEventPost.
+#
+# Target file: src/platform/macos/input.cpp
+
+if [[ -f "$INPUT_CPP" ]]; then
+    echo "  Patching input.cpp (keyboard modifier state tracking)..."
+
+    if ! grep -q "DERAGABU_KBD_FIX" "$INPUT_CPP"; then
+        python3 -c "
+import re
+
+with open('$INPUT_CPP', 'r') as f:
+    content = f.read()
+
+# 1. Inject modifier tracking helpers after the last #include in the file.
+modifier_code = '''
+// DERAGABU_KBD_FIX: Explicit modifier-flag tracking for correct Shift/Ctrl/Alt
+// key injection on macOS.  CGEventCreateKeyboardEvent(nullptr, ...) does not
+// automatically carry the current HID modifier state; we track it manually and
+// call CGEventSetFlags() on every keyboard CGEvent before posting.
+#include <atomic>
+namespace {
+static std::atomic<CGEventFlags> deragabu_kbd_modifiers{0};
+inline void deragabu_update_kbd_modifiers(CGKeyCode key, bool is_release) {
+  static const struct { CGKeyCode k; CGEventFlags f; } kMap[] = {
+    {0x38, kCGEventFlagMaskShift},      // Left Shift
+    {0x3C, kCGEventFlagMaskShift},      // Right Shift
+    {0x3B, kCGEventFlagMaskControl},    // Left Ctrl
+    {0x3E, kCGEventFlagMaskControl},    // Right Ctrl
+    {0x3A, kCGEventFlagMaskAlternate},  // Left Option/Alt
+    {0x3D, kCGEventFlagMaskAlternate},  // Right Option/Alt
+    {0x37, kCGEventFlagMaskCommand},    // Left Command
+    {0x36, kCGEventFlagMaskCommand},    // Right Command
+  };
+  for (const auto& m : kMap) {
+    if (key == m.k) {
+      auto cur = deragabu_kbd_modifiers.load();
+      deragabu_kbd_modifiers.store(is_release ? (cur & ~m.f) : (cur | m.f));
+      return;
+    }
+  }
+}
+} // anonymous namespace
+'''
+
+all_includes = list(re.finditer(r'^#include\b[^\n]*\n', content, re.MULTILINE))
+insert_pos = all_includes[-1].end() if all_includes else 0
+content = content[:insert_pos] + modifier_code + content[insert_pos:]
+
+# 2. For each CGEventCreateKeyboardEvent that is (within ~600 chars)
+#    followed by CGEventPost(kCGHIDEventTap, <same_var>), inject:
+#      deragabu_update_kbd_modifiers(keyVar, !(downExpr));
+#      CGEventSetFlags(var, deragabu_kbd_modifiers.load());
+#    immediately before the CGEventPost.  This updates the modifier-flag
+#    tracker for modifier keys, and applies the accumulated flags to every key.
+
+injections = {}
+
+kbd_re = re.compile(
+    r'(\s*)((?:auto|CGEventRef)\s+(\w+)\s*=\s*CGEventCreateKeyboardEvent'
+    r'\s*\([^,]+,\s*(\w+)\s*,\s*([^,)]+?)\s*\)\s*;)'
+)
+
+for m in kbd_re.finditer(content):
+    indent    = m.group(1).lstrip('\n')
+    var_name  = m.group(3)
+    key_var   = m.group(4)
+    down_expr = m.group(5).strip()
+
+    search_start = m.end()
+    search_area  = content[search_start:search_start + 600]
+
+    post_re = re.compile(
+        r'CGEventPost\s*\(\s*kCGHIDEventTap\s*,\s*' + re.escape(var_name) + r'\s*\)'
+    )
+    pm = post_re.search(search_area)
+    if pm:
+        inject_pos  = search_start + pm.start()
+        inject_code = (
+            indent + '  deragabu_update_kbd_modifiers(' + key_var +
+            ', !(' + down_expr + ')); // DERAGABU_KBD_FIX\n' +
+            indent + '  CGEventSetFlags(' + var_name +
+            ', deragabu_kbd_modifiers.load()); // DERAGABU_KBD_FIX\n' +
+            indent + '  '
+        )
+        injections[inject_pos] = inject_code
+
+# Apply injections from end to start to preserve earlier positions.
+for pos in sorted(injections.keys(), reverse=True):
+    content = content[:pos] + injections[pos] + content[pos:]
+
+with open('$INPUT_CPP', 'w') as f:
+    f.write(content)
+
+print('Patched ' + str(len(injections)) + ' keyboard CGEventPost site(s)')
+"
+        echo "    ✓ Keyboard modifier state tracking added"
+    else
+        echo "    ⊘ Already patched"
+    fi
+else
+    echo "  WARNING: input.cpp not found at $INPUT_CPP (keyboard modifier fix skipped)"
+fi
+
 # ── Patch 4c: Sunshine main — Initialize/shutdown agent ──
 
 # Find the main entry point (could be src/main.cpp or src/entry_handler.cpp)
@@ -639,7 +755,7 @@ fi
         ${OPENSSL_ROOT:+-DOPENSSL_CRYPTO_LIBRARY="$OPENSSL_ROOT/lib/libcrypto.dylib"} \
         ${OPENSSL_ROOT:+-DOPENSSL_SSL_LIBRARY="$OPENSSL_ROOT/lib/libssl.dylib"} \
         2>&1
-)
+)ss
 
 echo ""
 echo "Running ninja..."
@@ -674,6 +790,7 @@ echo "║  ✓ Cursor overlay via WebRTC (replaces system cursor)      ║"
 echo "║  ✓ capturesCursor=NO at init (best-effort HW cursor hide)  ║"
 echo "║  ✓ Clipboard sync (text + images, bidirectional)           ║"
 echo "║  ✓ Mouse scroll fix (pixel-based smooth scrolling)         ║"
+echo "║  ✓ Keyboard modifier fix (Shift/Ctrl/Alt propagation)      ║"
 echo "║  ✓ Agent auto-start/stop with Sunshine lifecycle           ║"
 echo "║                                                            ║"
 

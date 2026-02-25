@@ -544,6 +544,19 @@ fn capture_cursor() -> Result<Option<CursorEvent>> {
             (rgba.clone(), width, height, hotspot_x, hotspot_y)
         };
 
+        // macOS automatically hides the system cursor while the user types
+        // (AppKit auto-hide-on-input behaviour).  When this happens,
+        // CGSCurrentCursorSeed() changes and CGSGetGlobalCursorData may return
+        // a fully-transparent image.  Sending this "blank" cursor to the client
+        // would make the remote cursor vanish while a modifier key (e.g. Shift)
+        // is held.  Detect this case and skip the event so the client keeps
+        // showing the last known cursor shape.
+        let has_visible_pixels = final_rgba.chunks(4).any(|p| p[3] > 0);
+        if !has_visible_pixels {
+            debug!("Skipping fully-transparent cursor (macOS keyboard auto-hide)");
+            return Ok(None);
+        }
+
         let cursor_id = format!("cur_{}", &blake3::hash(&final_rgba).to_hex()[..12]);
         let webp_data = encode_static_webp(&final_rgba, final_w, final_h)?;
 
