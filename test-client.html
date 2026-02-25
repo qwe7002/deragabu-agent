@@ -1254,13 +1254,12 @@ enum MessageType {
             // Logical cursor size = pixel size / dpi_scale.
             const imgW  = cursorInfo.width;
             const imgH  = cursorInfo.height;
-            const dpi   = cursorInfo.dpi_scale || 1;
 
-            // CSS size = physical pixels / DPI scale (logical size)
-            const cssWidth  = imgW / dpi;
-            const cssHeight = imgH / dpi;
-            const hotspotX  = cursorInfo.hotspot_x / dpi;
-            const hotspotY  = cursorInfo.hotspot_y / dpi;
+            // Width/height/hotspot are already in logical dimensions (pre-scaled by server)
+            const cssWidth  = imgW;
+            const cssHeight = imgH;
+            const hotspotX  = cursorInfo.hotspot_x;
+            const hotspotY  = cursorInfo.hotspot_y;
 
             let html = `
                 <div class="cursor-wrapper">
@@ -1291,20 +1290,12 @@ enum MessageType {
 
             info.innerHTML = `
                 <div>
-                    <div class="info-item-label">图像尺寸</div>
+                    <div class="info-item-label">尺寸 (逻辑)</div>
                     <div class="info-item-value">${cursorInfo.width} × ${cursorInfo.height} px</div>
-                </div>
-                <div>
-                    <div class="info-item-label">CSS 尺寸</div>
-                    <div class="info-item-value">${cssWidth.toFixed(1)} × ${cssHeight.toFixed(1)} px</div>
                 </div>
                 <div>
                     <div class="info-item-label">热点</div>
                     <div class="info-item-value">(${cursorInfo.hotspot_x}, ${cursorInfo.hotspot_y})</div>
-                </div>
-                <div>
-                    <div class="info-item-label">DPI 缩放</div>
-                    <div class="info-item-value"><span class="badge badge-info">${dpi.toFixed(2)}</span></div>
                 </div>
                 <div>
                     <div class="info-item-label">状态</div>
