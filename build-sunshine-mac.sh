@@ -11,8 +11,11 @@
 #   4. Patch Sunshine source to integrate the agent:
 #      - av_video.m: Set capturesCursor=NO at session init (best-effort)
 #      - display.mm: Forward *cursor state to agent FFI (overlay control)
+#      - input.cpp: Fix mouse scroll (pixel units + speed scaling ×40/120)
 #      - main.cpp: Initialize/shutdown agent
 #   5. Build Sunshine with CMake + Ninja, linking the agent
+#      - CMAKE_INSTALL_PREFIX → build dir (fixes Web UI blank page)
+#      - Pre-install npm deps for web UI assets
 #
 # NOTE on capturesCursor:
 #   AVCaptureScreenInput.capturesCursor is set to NO once at init time.
@@ -371,12 +374,12 @@ content_new = content.replace(
 )
 
 # Pattern 2: If the scroll function divides by WHEEL_DELTA (120), the pixel
-# values will be too small. We need a reasonable pixel multiplier.
-# Look for patterns like 'high_res_distance / 120' or '/ WHEEL_DELTA'
-# and replace with a sensible pixel scroll amount.
+# values will be too small. macOS needs ~40 pixels per notch for natural
+# scroll feel. Moonlight sends 120 per notch (Windows WHEEL_DELTA).
+# So: high_res_distance * 40 / 120 ≈ 40px per notch.
 content_new = re.sub(
     r'(scroll_amt|high_res_distance|distance)\s*/\s*(120|WHEEL_DELTA)',
-    r'(\1 * 3 / 120) /* DERAGABU_SCROLL_FIX: scale to macOS pixels */',
+    r'(\1 * 40 / 120) /* DERAGABU_SCROLL_FIX: scale to macOS pixels (~40px/notch) */',
     content_new
 )
 
@@ -620,9 +623,14 @@ else
     echo "  The Sunshine web admin panel may not be available."
 fi
 
+# Set CMAKE_INSTALL_PREFIX to the build directory so SUNSHINE_ASSETS_DIR
+# resolves to $SUNSHINE_DIR/build/assets (where vite outputs the web UI).
+# Without this, it defaults to /usr/local/assets which doesn't exist,
+# causing a blank web UI page.
 (cd "$SUNSHINE_DIR" && \
     cmake -B build -G Ninja -S . \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX="$SUNSHINE_DIR/build" \
         -DSUNSHINE_ENABLE_TRAY=ON \
         ${MACOS_SDK:+-DCMAKE_OSX_SYSROOT="$MACOS_SDK"} \
         -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX" \

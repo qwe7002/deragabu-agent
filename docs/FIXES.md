@@ -329,3 +329,84 @@ cargo run --release
 
 问题已完全解决！享受高清晰度的光标捕获吧！🎉
 
+---
+
+## 🖱️ Sunshine macOS 鼠标滚动修复
+
+### 问题：鼠标滚动不工作或滚动很卡
+
+**根本原因**：Sunshine 的 macOS 输入处理器 (`src/platform/macos/input.cpp`) 使用
+`kCGScrollEventUnitLine`（行级滚动）处理来自 Moonlight 的滚动事件。Moonlight 发送的
+滚动值是 Windows 规范的 120 分之一行，在 macOS 上需要转换为像素级滚动才能流畅工作。
+
+**修复方案**：在 `build-sunshine-mac.sh` 中新增 Patch 4b2，自动修补 Sunshine 的输入处理：
+
+1. **滚动单位修复**：将 `kCGScrollEventUnitLine` 替换为 `kCGScrollEventUnitPixel`
+   - 行级滚动在 macOS 上会产生不连贯的跳跃式滚动
+   - 像素级滚动可以实现平滑滚动体验
+
+2. **滚动量缩放**：调整 Moonlight 的滚动增量到 macOS 像素值
+   - Windows: 120 单位 = 1 行滚动
+   - macOS 像素滚动: 需要乘以适当系数（~3x）才能获得自然手感
+
+**手动修复**（如果自动补丁没有匹配到正确的代码模式）：
+
+```cpp
+// 在 Sunshine 的 src/platform/macos/input.cpp 中找到滚动处理函数
+// 将：
+CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 1, scroll_amt);
+// 改为：
+CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitPixel, 1, scroll_amt * 3);
+```
+
+**已知限制**：
+- 由于不同版本的 Sunshine 源码结构可能不同，自动补丁使用了多种模式匹配
+- 如果自动补丁无法匹配，日志会提示手动修复方法
+- 触控板的自然滚动方向可能需要额外处理
+
+---
+
+## 🌐 Sunshine Web UI 缺失修复
+
+### 问题：构建后 Sunshine 没有 Web 管理界面
+
+Sunshine 的 Web 管理面板通常运行在 `https://localhost:47990`，用于配置流媒体设置、
+管理客户端配对等。构建后 Web UI 缺失可能有多个原因。
+
+**根本原因分析**：
+
+1. **cmake 输出被截断**：旧版构建脚本使用 `| tail -20` 过滤 cmake 输出，导致 npm 构建
+   错误被静默忽略
+2. **SUNSHINE_ENABLE_TRAY 未设置**：`constants.cmake` 补丁将 `SUNSHINE_TRAY` 改为条件
+   依赖 `SUNSHINE_ENABLE_TRAY`，但 cmake 命令未传入该选项，导致 tray 功能默认关闭
+3. **npm 依赖未安装**：Web UI 的 npm 依赖可能在 cmake 构建时安装失败
+
+**修复方案**（已在 `build-sunshine-mac.sh` 中实现）：
+
+1. **移除输出截断**：cmake 配置输出不再通过 `tail -20`，所有错误信息完整显示
+2. **添加 cmake 选项**：传入 `-DSUNSHINE_ENABLE_TRAY=ON`
+3. **预安装 npm 依赖**：在 cmake 配置前，先在 Sunshine 的 Web 源码目录执行 `npm install`
+4. **构建后验证**：检查 Web UI 资源文件是否存在，并在输出中提示状态
+
+**手动修复**（如果 Web UI 仍然缺失）：
+
+```bash
+# 1. 进入 Sunshine 的 web 资源目录
+cd /path/to/Sunshine/src_assets/common/assets/web
+
+# 2. 安装依赖并构建
+npm install
+npm run build
+
+# 3. 重新编译 Sunshine
+cd /path/to/Sunshine
+ninja -C build
+
+# 4. 验证资源
+ls build/src_assets/common/assets/web/dist/
+```
+
+**Web UI 端口说明**：
+- Sunshine Web UI: `https://localhost:47990`（HTTPS，首次启动自动生成自签名证书）
+- Deragabu Agent WebRTC: `http://localhost:9000`（独立端口，仅用于光标/剪贴板同步）
+
