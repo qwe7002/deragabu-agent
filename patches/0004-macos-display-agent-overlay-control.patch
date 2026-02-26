@@ -1,0 +1,53 @@
+From: Deragabu Agent <deragabu@localhost>
+Date: Thu, 01 Jan 2026 00:00:00 +0000
+Subject: [PATCH 4/6] macos: add deragabu agent cursor overlay control to display.mm
+
+1. Include deragabu_agent.h in display.mm.
+2. In capture(), insert cursor overlay forwarding block before the
+   AVCapture callback loop. Uses a static debounce so only changes
+   are forwarded to the agent.
+
+---
+ src/platform/macos/display.mm | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/src/platform/macos/display.mm b/src/platform/macos/display.mm
+index be124b2d..b23ef775 100644
+--- a/src/platform/macos/display.mm
++++ b/src/platform/macos/display.mm
+@@ -14,6 +14,11 @@
+ // Avoid conflict between AVFoundation and libavutil both defining AVMediaType
+ #define AVMediaType AVMediaType_FFmpeg
+ #include "src/video.h"
++
++// Deragabu Agent — cursor overlay + clipboard sync
++extern "C" {
++#include "deragabu_agent.h"
++}
+ #undef AVMediaType
+
+ namespace fs = std::filesystem;
+@@ -30,6 +35,23 @@
+     }
+
+     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
++      // ── Deragabu Agent: forward cursor visibility to overlay ──
++      // capturesCursor is set to NO at init (av_video.m), but may be
++      // silently ignored due to macOS bug (Accessibility cursor size).
++      // The overlay is the authoritative cursor — pass *cursor directly:
++      //   true  → show overlay,  false → hide overlay
++      {
++        static bool last_cursor_state = true;
++        bool want_cursor = cursor ? *cursor : true;
++        if (want_cursor != last_cursor_state) {
++          if (deragabu_agent_is_running()) {
++            deragabu_agent_set_display_cursor(want_cursor);
++          }
++          last_cursor_state = want_cursor;
++          BOOST_LOG(info) << "Cursor overlay " << (want_cursor ? "shown" : "hidden");
++        }
++      }
++
+       auto signal = [av_capture capture:^(CMSampleBufferRef sampleBuffer) {
+         auto new_sample_buffer = std::make_shared<av_sample_buf_t>(sampleBuffer);
+         auto new_pixel_buffer = std::make_shared<av_pixel_buf_t>(new_sample_buffer->buf);

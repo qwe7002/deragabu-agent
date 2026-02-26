@@ -1,0 +1,67 @@
+From: Deragabu Agent <deragabu@localhost>
+Date: Thu, 01 Jan 2026 00:00:00 +0000
+Subject: [PATCH 5/6] macos input: fix keyboard modifier propagation and scroll speed
+
+Bug A (keyboard): kCGEventFlagsChanged events reuse the pre-allocated
+kb_event whose keycode field still holds the last regular key pressed
+(e.g. kVK_Return). macOS uses the keycode in FlagsChanged events to
+identify which modifier changed; a stale keycode causes the last key
+to appear continuously held while any modifier is down.
+Fix: set the modifier key's own keycode via CGEventSetIntegerValueField
+before posting kCGEventFlagsChanged.
+
+Bug B (keyboard): regular key events (kCGEventKeyDown/Up) never apply
+the accumulated kb_flags, so Shift+letter produces lowercase, Ctrl/Alt
+shortcuts fail, etc.
+Fix: call CGEventSetFlags(event, macos_input->kb_flags) in the
+regular-key else branch.
+
+Scroll: Moonlight sends high_res_distance in 120ths-of-a-line units
+(Windows WHEEL_DELTA convention). The previous /120 reduction
+produced ~40 px/notch with kCGScrollEventUnitLine, which is jerky.
+Using kCGScrollEventUnitPixel with the value 1:1 (~120px/notch)
+matches macOS default scroll speed (3 lines x 40 px).
+
+---
+ src/platform/macos/input.cpp | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/src/platform/macos/input.cpp b/src/platform/macos/input.cpp
+index d3bf2005..5acd40d9 100644
+--- a/src/platform/macos/input.cpp
++++ b/src/platform/macos/input.cpp
+@@ -285,10 +285,12 @@ const KeyCodeMap kKeyCodesMap[] = {
+ 
+       macos_input->kb_flags = release ? macos_input->kb_flags & ~mask : macos_input->kb_flags | mask;
+       CGEventSetType(event, kCGEventFlagsChanged);
++      CGEventSetIntegerValueField(event, kCGKeyboardEventKeycode, key); // DERAGABU_KBD_FIX: set modifier key own keycode in FlagsChanged event
+       CGEventSetFlags(event, macos_input->kb_flags);
+     } else {
+       CGEventSetIntegerValueField(event, kCGKeyboardEventKeycode, key);
+       CGEventSetType(event, release ? kCGEventKeyUp : kCGEventKeyDown);
++      CGEventSetFlags(event, macos_input->kb_flags); // DERAGABU_KBD_FIX: propagate Shift/Ctrl/Alt/Cmd to regular key events
+     }
+ 
+     CGEventPost(kCGHIDEventTap, event);
+@@ -449,17 +451,17 @@ const KeyCodeMap kKeyCodesMap[] = {
+   }
+ 
+   void scroll(input_t &input, const int high_res_distance) {
+-    int wheelY = high_res_distance / 120;
++    int wheelY = high_res_distance /* DERAGABU_SCROLL_FIX: 1:1 scale ~120px/notch */;
+     int wheelX = 0;
+-    CGEventRef upEvent = CGEventCreateScrollWheelEvent(nullptr, kCGScrollEventUnitLine, 2, wheelY, wheelX);
++    CGEventRef upEvent = CGEventCreateScrollWheelEvent(nullptr, kCGScrollEventUnitPixel /* DERAGABU_SCROLL_FIX */, 2, wheelY, wheelX);
+     CGEventPost(kCGHIDEventTap, upEvent);
+     CFRelease(upEvent);
+   }
+ 
+   void hscroll(input_t &input, int high_res_distance) {
+     int wheelY = 0;
+-    int wheelX = high_res_distance / 120;
+-    CGEventRef upEvent = CGEventCreateScrollWheelEvent(nullptr, kCGScrollEventUnitLine, 2, wheelY, wheelX);
++    int wheelX = high_res_distance /* DERAGABU_SCROLL_FIX: 1:1 scale ~120px/notch */;
++    CGEventRef upEvent = CGEventCreateScrollWheelEvent(nullptr, kCGScrollEventUnitPixel /* DERAGABU_SCROLL_FIX */, 2, wheelY, wheelX);
+     CGEventPost(kCGHIDEventTap, upEvent);
+     CFRelease(upEvent);
+   }

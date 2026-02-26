@@ -1,0 +1,31 @@
+From: Deragabu Agent <deragabu@localhost>
+Date: Thu, 01 Jan 2026 00:00:00 +0000
+Subject: [PATCH 3/6] macos: set capturesCursor=NO at AVCaptureScreenInput init
+
+Hide the hardware cursor from the captured video stream. The deragabu
+agent provides a low-latency software cursor overlay via WebRTC instead.
+
+Known limitation: if the user has changed cursor size in Accessibility
+settings, macOS may silently ignore capturesCursor=NO.
+
+---
+ src/platform/macos/av_video.m | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/platform/macos/av_video.m b/src/platform/macos/av_video.m
+index 630d7101..20d177b4 100644
+--- a/src/platform/macos/av_video.m
++++ b/src/platform/macos/av_video.m
+@@ -59,6 +59,12 @@
+   CFRelease(mode);
+
+   AVCaptureScreenInput *screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:self.displayID];
++
++  // Deragabu Agent: hide hardware cursor from capture.
++  // The agent provides a low-latency soft cursor overlay via WebRTC.
++  // NOTE: Known macOS bug — if Accessibility cursor size != default,
++  //       this setting may be silently ignored.
++  [screenInput setCapturesCursor:NO];
+   [screenInput setMinFrameDuration:self.minFrameDuration];
+
+   if ([self.session canAddInput:screenInput]) {

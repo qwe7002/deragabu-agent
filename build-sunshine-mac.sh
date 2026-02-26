@@ -153,6 +153,14 @@ echo ""
 
 echo "━━━ Step 4: Patching Sunshine source ━━━"
 
+PATCHES_DIR="$AGENT_DIR/patches"
+
+if [[ ! -d "$PATCHES_DIR" ]]; then
+    echo "ERROR: Patches directory not found at $PATCHES_DIR"
+    echo "  Expected: $PATCHES_DIR/0001-cmake-deps-homebrew-includes.patch ... etc."
+    exit 1
+fi
+
 # Create a marker file to track if we've already patched
 PATCH_MARKER="$SUNSHINE_DIR/.deragabu-patched"
 
@@ -162,492 +170,66 @@ if [[ -f "$PATCH_MARKER" ]]; then
     rm -f "$PATCH_MARKER"
 fi
 
-# ── Patch 4-pre: cmake/dependencies/common.cmake — Add Homebrew include paths ──
+# ── Helper: apply a patch file, tolerate already-applied ──────────────────────
+apply_patch() {
+    local patch_file="$1"
+    local description="$2"
+    echo "  Patching: $description..."
+    if ! (cd "$SUNSHINE_DIR" && patch -p1 --forward --silent < "$patch_file" 2>&1); then
+        echo "    ⚠ patch reported issues (may already be applied or context mismatch)"
+        echo "      Check manually: patch -p1 < $patch_file"
+    else
+        echo "    ✓ Applied"
+    fi
+}
+
+# ── Patch 1: cmake Homebrew include paths ──────────────────────────────────────
+apply_patch "$PATCHES_DIR/0001-cmake-deps-homebrew-includes.patch" \
+    "cmake/dependencies: OpenSSL + Opus Homebrew include paths"
+
+# ── Patch 2: cmake tray option ─────────────────────────────────────────────────
+apply_patch "$PATCHES_DIR/0002-cmake-constants-tray-flag.patch" \
+    "cmake/prep/constants: SUNSHINE_TRAY respects SUNSHINE_ENABLE_TRAY"
+
+# ── Patch 3: av_video.m capturesCursor=NO ──────────────────────────────────────
+apply_patch "$PATCHES_DIR/0003-macos-av-video-captures-cursor-no.patch" \
+    "av_video.m: set capturesCursor=NO at session init"
+
+# ── Patch 4: display.mm agent cursor overlay control ───────────────────────────
+apply_patch "$PATCHES_DIR/0004-macos-display-agent-overlay-control.patch" \
+    "display.mm: include deragabu_agent.h + forward cursor overlay state"
+
+# ── Patch 5: input.cpp keyboard modifier + scroll fixes ────────────────────────
 #
-# Sunshine's CMakeLists links ${OPENSSL_LIBRARIES} and opus but never adds
-# their include directories to the search path.  On Linux this is fine
-# (headers in /usr/include), but on macOS with Homebrew the headers are
-# at non-standard locations (e.g. /opt/homebrew/opt/openssl@3/include,
-# /opt/homebrew/opt/opus/include).
+# Keyboard Bug A: kCGEventFlagsChanged reuses kb_event with stale keycode
+#   → Enter (or last key) appears held while any modifier is pressed
+# Keyboard Bug B: regular key events lack CGEventSetFlags(kb_flags)
+#   → Shift+letter produces lowercase, Ctrl/Alt shortcuts fail
+# Scroll: /120 + kCGScrollEventUnitLine gave ~40 px/notch (jerky)
+#   → 1:1 value + kCGScrollEventUnitPixel gives ~120 px/notch (smooth)
+apply_patch "$PATCHES_DIR/0005-macos-input-scroll-and-keyboard-fix.patch" \
+    "input.cpp: keyboard modifier propagation + smooth scroll"
 
-DEPS_CMAKE="$SUNSHINE_DIR/cmake/dependencies/common.cmake"
-if [[ -f "$DEPS_CMAKE" ]]; then
-    echo "  Patching cmake/dependencies/common.cmake (Homebrew include paths)..."
-    if ! grep -q "OPENSSL_INCLUDE_DIR" "$DEPS_CMAKE"; then
-        # Add OpenSSL include path after find_package(OpenSSL)
-        sed -i.bak '/^find_package(OpenSSL REQUIRED)/ a\
-include_directories(SYSTEM ${OPENSSL_INCLUDE_DIR})
-' "$DEPS_CMAKE"
-        rm -f "${DEPS_CMAKE}.bak"
-        echo "    ✓ Added OpenSSL include path"
-    else
-        echo "    ⊘ OpenSSL include already patched"
-    fi
-
-    # Add opus include path (Homebrew puts it outside the default search path).
-    # NOTE: opus.pc sets Cflags to -I.../include/opus, but the source code
-    # uses #include <opus/opus_multistream.h>, so we need the *parent* dir.
-    if ! grep -q "pkg_check_modules.*OPUS" "$DEPS_CMAKE"; then
-        sed -i.bak '/^pkg_check_modules(CURL REQUIRED libcurl)/ a\
-pkg_check_modules(OPUS REQUIRED opus)\
-# opus.pc Cflags points to .../include/opus but code uses #include <opus/...>\
-# so add the parent directory to the include path\
-foreach(_opus_inc ${OPUS_INCLUDE_DIRS})\
-  get_filename_component(_opus_parent "${_opus_inc}" DIRECTORY)\
-  include_directories(SYSTEM "${_opus_parent}")\
-endforeach()
-' "$DEPS_CMAKE"
-        rm -f "${DEPS_CMAKE}.bak"
-        echo "    ✓ Added opus pkg-config + include path (parent of pkg-config dir)"
-    else
-        echo "    ⊘ Opus include already patched"
-    fi
+# ── Patch 6: main.cpp agent init/shutdown (template — substitutes bind addr) ───
+echo "  Patching: main.cpp agent init/shutdown (bind_addr=$AGENT_BIND_ADDR)..."
+TMP_PATCH="$(mktemp /tmp/deragabu-main-XXXXXX.patch)"
+sed "s|@@AGENT_BIND_ADDR@@|$AGENT_BIND_ADDR|g" \
+    "$PATCHES_DIR/0006-main-agent-init.patch.in" > "$TMP_PATCH"
+if ! (cd "$SUNSHINE_DIR" && patch -p1 --forward --silent < "$TMP_PATCH" 2>&1); then
+    echo "    ⚠ patch reported issues (may already be applied or context mismatch)"
 else
-    echo "  WARNING: cmake/dependencies/common.cmake not found"
+    echo "    ✓ Applied"
 fi
+rm -f "$TMP_PATCH"
 
-# ── Patch 4-pre-b: constants.cmake — Respect SUNSHINE_ENABLE_TRAY=OFF ──
-#
-# constants.cmake unconditionally sets SUNSHINE_TRAY=1 via plain set(),
-# which overrides any -DSUNSHINE_TRAY=0 passed on the cmake command line.
-# On Linux, compile_definitions/linux.cmake conditionally resets it to 0,
-# but macOS has no such logic. Patch constants.cmake to check the option.
-
-CONSTANTS_CMAKE="$SUNSHINE_DIR/cmake/prep/constants.cmake"
-if [[ -f "$CONSTANTS_CMAKE" ]]; then
-    echo "  Patching constants.cmake (respect SUNSHINE_ENABLE_TRAY)..."
-    if ! grep -q "SUNSHINE_ENABLE_TRAY" "$CONSTANTS_CMAKE"; then
-        sed -i.bak 's/^set(SUNSHINE_TRAY 1)/if(SUNSHINE_ENABLE_TRAY)\n  set(SUNSHINE_TRAY 1)\nelse()\n  set(SUNSHINE_TRAY 0)\nendif()/' "$CONSTANTS_CMAKE"
-        rm -f "${CONSTANTS_CMAKE}.bak"
-        echo "    ✓ SUNSHINE_TRAY now respects SUNSHINE_ENABLE_TRAY"
-    else
-        echo "    ⊘ Already patched"
-    fi
+# ── CMakeLists.txt: append agent link block (paths are machine-specific) ────────
+echo "  Patching: CMakeLists.txt (agent static library link)..."
+if ! grep -q "deragabu_agent" "$SUNSHINE_DIR/CMakeLists.txt"; then
+    sed "s|@AGENT_LIB@|$AGENT_LIB|g; s|@AGENT_INCLUDE@|$AGENT_DIR/include|g" \
+        "$PATCHES_DIR/CMakeLists.txt.append.in" >> "$SUNSHINE_DIR/CMakeLists.txt"
+    echo "    ✓ Added agent linking to CMakeLists.txt"
 else
-    echo "  WARNING: constants.cmake not found"
-fi
-
-# ── Patch 4a: av_video.m — Set capturesCursor=NO at session init ──
-#
-# This is a best-effort patch. Known limitation:
-#   macOS bug — if the user has changed cursor size in Accessibility settings,
-#   capturesCursor=NO may be silently ignored and the hardware cursor will
-#   still appear in the captured video. There is no known workaround.
-#   The agent's soft cursor overlay compensates by always being the primary
-#   cursor mechanism.
-
-AV_VIDEO_M="$SUNSHINE_DIR/src/platform/macos/av_video.m"
-
-if [[ -f "$AV_VIDEO_M" ]]; then
-    echo "  Patching av_video.m (capturesCursor=NO at init)..."
-
-    if ! grep -q "capturesCursor" "$AV_VIDEO_M"; then
-        # After the line that creates the screenInput, add capturesCursor=NO
-        # wrapped in beginConfiguration/commitConfiguration.
-        #
-        # Original:   AVCaptureScreenInput *screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:self.displayID];
-        # After:      + [screenInput setCapturesCursor:NO];
-        #
-        # We also wrap the session addInput in beginConfiguration/commitConfiguration
-        # to ensure the capturesCursor change is applied atomically.
-        sed -i.bak '/AVCaptureScreenInput \*screenInput = \[\[AVCaptureScreenInput alloc\] initWithDisplayID:self\.displayID\];/ a\
-\
-  // Deragabu Agent: hide hardware cursor from capture.\
-  // The agent provides a low-latency soft cursor overlay via WebRTC.\
-  // NOTE: Known macOS bug — if Accessibility cursor size != default,\
-  //       this setting may be silently ignored.\
-  [screenInput setCapturesCursor:NO];
-' "$AV_VIDEO_M"
-
-        rm -f "${AV_VIDEO_M}.bak"
-        echo "    ✓ Set capturesCursor=NO at session init"
-    else
-        echo "    ⊘ Already patched"
-    fi
-else
-    echo "  WARNING: av_video.m not found at $AV_VIDEO_M"
-fi
-
-# ── Patch 4b: display.mm — Forward *cursor to agent (overlay control) ──
-#
-# Hardware cursor is already set to NO at init (av_video.m patch above).
-# Here we forward the *cursor flag to the agent so the soft cursor
-# overlay can be shown/hidden.
-#
-# Direct mapping (no inversion needed):
-#   *cursor=true  (user wants visible cursor) → set_display_cursor(true)
-#     → agent sends draw_cursor=true → client shows overlay ✓
-#   *cursor=false (user wants no cursor)      → set_display_cursor(false)
-#     → agent sends draw_cursor=false → client hides overlay ✓
-
-DISPLAY_MM="$SUNSHINE_DIR/src/platform/macos/display.mm"
-
-if [[ -f "$DISPLAY_MM" ]]; then
-    echo "  Patching display.mm (agent overlay control)..."
-
-    if ! grep -q "deragabu_agent" "$DISPLAY_MM"; then
-        # 1. Add #include for the agent header at the top (after existing includes)
-        sed -i.bak '/#include "src\/video.h"/ a\
-\
-// Deragabu Agent — cursor overlay + clipboard sync\
-extern "C" {\
-#include "deragabu_agent.h"\
-}' "$DISPLAY_MM"
-
-        # 2. In the capture method, forward *cursor to the agent directly.
-        #    We do NOT touch capturesCursor here — it is set once at init.
-        #    The pattern "auto signal = [av_capture capture:..." appears twice:
-        #      - In capture() method (has bool *cursor param) — patch here
-        #      - In dummy_img() method (no cursor param) — skip
-        #    Use Python to patch only the first occurrence.
-        python3 -c "
-import re, sys
-with open('$DISPLAY_MM', 'r') as f:
-    content = f.read()
-target = 'auto signal = [av_capture capture:^(CMSampleBufferRef sampleBuffer) {'
-patch = '''
-      // ── Deragabu Agent: forward cursor visibility to overlay ──
-      // capturesCursor is set to NO at init (av_video.m), but may be
-      // silently ignored due to macOS bug (Accessibility cursor size).
-      // The overlay is the authoritative cursor — pass *cursor directly:
-      //   true  → show overlay,  false → hide overlay
-      {
-        static bool last_cursor_state = true;
-        bool want_cursor = cursor ? *cursor : true;
-        if (want_cursor != last_cursor_state) {
-          if (deragabu_agent_is_running()) {
-            deragabu_agent_set_display_cursor(want_cursor);
-          }
-          last_cursor_state = want_cursor;
-          BOOST_LOG(info) << \"Cursor overlay \" << (want_cursor ? \"shown\" : \"hidden\");
-        }
-      }
-
-'''
-# Replace only the first occurrence
-idx = content.find(target)
-if idx >= 0:
-    content = content[:idx] + patch + content[idx:]
-with open('$DISPLAY_MM', 'w') as f:
-    f.write(content)
-"
-
-        rm -f "${DISPLAY_MM}.bak" "${DISPLAY_MM}.bak2"
-        echo "    ✓ Added agent overlay control"
-    else
-        echo "    ⊘ Already patched"
-    fi
-else
-    echo "  WARNING: display.mm not found at $DISPLAY_MM"
-fi
-
-# ── Patch 4b2: macOS input — Fix mouse scroll handling ──
-#
-# Sunshine's macOS input handler may use kCGScrollEventUnitLine for scroll
-# events, which produces jerky/broken scrolling with Moonlight. Moonlight
-# sends scroll values in 120ths of a line (Windows convention).
-#
-# This patch:
-#   - Uses kCGScrollEventUnitPixel for smooth scrolling
-#   - Properly scales the Moonlight scroll delta for macOS
-#   - Handles both vertical and horizontal scroll axes
-#
-# Target file: src/platform/macos/input.cpp (the platf::scroll function)
-
-INPUT_CPP="$SUNSHINE_DIR/src/platform/macos/input.cpp"
-
-if [[ -f "$INPUT_CPP" ]]; then
-    echo "  Patching input.cpp (scroll handling fix)..."
-
-    if ! grep -q "DERAGABU_SCROLL_FIX" "$INPUT_CPP"; then
-        python3 -c "
-import re, sys
-
-with open('$INPUT_CPP', 'r') as f:
-    content = f.read()
-
-# Pattern 1: Fix kCGScrollEventUnitLine → kCGScrollEventUnitPixel
-# This ensures smooth pixel-based scrolling instead of jerky line-based
-content_new = content.replace(
-    'kCGScrollEventUnitLine',
-    'kCGScrollEventUnitPixel /* DERAGABU_SCROLL_FIX: pixel-based for smooth scroll */'
-)
-
-# Pattern 2: If the scroll function divides by WHEEL_DELTA (120), the pixel
-# values will be too small. macOS needs ~40 pixels per notch for natural
-# scroll feel. Moonlight sends 120 per notch (Windows WHEEL_DELTA).
-# So: high_res_distance * 40 / 120 ≈ 40px per notch.
-content_new = re.sub(
-    r'(scroll_amt|high_res_distance|distance)\s*/\s*(120|WHEEL_DELTA)',
-    r'(\1 * 40 / 120) /* DERAGABU_SCROLL_FIX: scale to macOS pixels (~40px/notch) */',
-    content_new
-)
-
-if content_new != content:
-    with open('$INPUT_CPP', 'w') as f:
-        f.write(content_new)
-    print('  Applied scroll event unit and scaling fixes')
-else:
-    # If the simple replacements didn't match, try a broader approach:
-    # Look for CGEventCreateScrollWheelEvent and ensure it uses pixel units
-    pattern = r'(CGEventCreateScrollWheelEvent\s*\([^,]+,\s*)kCGScrollEventUnitLine'
-    if re.search(pattern, content):
-        content_new = re.sub(pattern,
-            r'\1kCGScrollEventUnitPixel /* DERAGABU_SCROLL_FIX */',
-            content)
-        with open('$INPUT_CPP', 'w') as f:
-            f.write(content_new)
-        print('  Applied CGEventCreateScrollWheelEvent fix')
-    else:
-        # Mark as patched even if no changes needed (already using pixel units)
-        # Add a comment at the top to indicate we checked
-        content_new = '// DERAGABU_SCROLL_FIX: scroll handling verified\\n' + content
-        with open('$INPUT_CPP', 'w') as f:
-            f.write(content_new)
-        print('  Scroll handling already uses correct units (marked as verified)')
-"
-        echo "    ✓ Scroll handling patched"
-    else
-        echo "    ⊘ Already patched"
-    fi
-else
-    echo "  WARNING: input.cpp not found at $INPUT_CPP"
-    echo "    Scroll fix may need manual application. Check Sunshine's macOS input handler."
-    echo "    Key: CGEventCreateScrollWheelEvent should use kCGScrollEventUnitPixel"
-fi
-
-# ── Patch 4b3: macOS input — Fix keyboard modifier (Shift/Ctrl/Alt) propagation ──
-#
-# Two bugs in keyboard_update() when using a reused kb_event object:
-#
-# Bug A — Stale keycode in kCGEventFlagsChanged events:
-#   The modifier-key path calls CGEventSetType(kCGEventFlagsChanged) but never
-#   updates kCGKeyboardEventKeycode.  The keycode field holds the last regular
-#   key that was pressed (e.g. kVK_Return after the user hit Enter).  macOS uses
-#   the keycode in FlagsChanged events to identify which modifier changed; a
-#   stale kVK_Return causes the system to treat Return as a held key whenever
-#   a modifier is pressed → "Enter keeps repeating while Shift is held".
-#   Fix: CGEventSetIntegerValueField(keycode, key) in the modifier path.
-#
-# Bug B — Missing modifier flags on regular key events:
-#   The regular-key path (kCGEventKeyDown/Up) sets the keycode and type but
-#   never calls CGEventSetFlags.  Accumulated modifier state in kb_flags is
-#   lost → Shift+letter produces lowercase, Ctrl/Alt shortcuts fail.
-#   Fix: CGEventSetFlags(event, kb_flags) in the regular-key path.
-#
-# Target: src/platform/macos/input.cpp  keyboard_update()
-
-if [[ -f "$INPUT_CPP" ]]; then
-    echo "  Patching input.cpp (keyboard modifier state tracking)..."
-
-    if ! grep -q "DERAGABU_KBD_FIX" "$INPUT_CPP"; then
-        python3 -c "
-with open('$INPUT_CPP', 'r') as f:
-    content = f.read()
-
-results = []
-
-# Fix 1: Modifier key path (kCGEventFlagsChanged) — CGEventSetType changes the
-# event type but never updates kCGKeyboardEventKeycode.  The keycode field retains
-# whatever was set by the last regular keypress (e.g. kVK_Return).  The system
-# receives a kCGEventFlagsChanged event whose keycode identifies which modifier
-# changed — if it is stale (e.g. Return), macOS misinterprets the event and
-# acts as if Return is being held while the modifier changes.
-# Fix: set the modifier key's own keycode before posting.
-old1 = '''      macos_input->kb_flags = release ? macos_input->kb_flags & ~mask : macos_input->kb_flags | mask;
-      CGEventSetType(event, kCGEventFlagsChanged);
-      CGEventSetFlags(event, macos_input->kb_flags);'''
-
-new1 = '''      macos_input->kb_flags = release ? macos_input->kb_flags & ~mask : macos_input->kb_flags | mask;
-      CGEventSetType(event, kCGEventFlagsChanged);
-      CGEventSetIntegerValueField(event, kCGKeyboardEventKeycode, key); // DERAGABU_KBD_FIX: set modifier key's own keycode in FlagsChanged event
-      CGEventSetFlags(event, macos_input->kb_flags);'''
-
-if old1 in content:
-    content = content.replace(old1, new1, 1)
-    results.append('Fix1: modifier keycode set in FlagsChanged event')
-else:
-    results.append('WARNING Fix1: modifier-key pattern not found')
-
-# Fix 2: Regular key path (kCGEventKeyDown/Up) — CGEventSetType does not carry
-# over the modifier flags accumulated in kb_flags, so Shift+letter produces
-# lowercase, Ctrl+key shortcuts fail, etc.
-# Fix: add CGEventSetFlags to propagate the current modifier state.
-old2 = '''      CGEventSetIntegerValueField(event, kCGKeyboardEventKeycode, key);
-      CGEventSetType(event, release ? kCGEventKeyUp : kCGEventKeyDown);
-    }
-
-    CGEventPost(kCGHIDEventTap, event);'''
-
-new2 = '''      CGEventSetIntegerValueField(event, kCGKeyboardEventKeycode, key);
-      CGEventSetType(event, release ? kCGEventKeyUp : kCGEventKeyDown);
-      CGEventSetFlags(event, macos_input->kb_flags); // DERAGABU_KBD_FIX: propagate Shift/Ctrl/Alt/Cmd to regular key events
-    }
-
-    CGEventPost(kCGHIDEventTap, event);'''
-
-if old2 in content:
-    content = content.replace(old2, new2, 1)
-    results.append('Fix2: modifier flags propagated to regular key events')
-else:
-    results.append('WARNING Fix2: regular-key pattern not found')
-
-with open('$INPUT_CPP', 'w') as f:
-    f.write(content)
-
-for r in results:
-    print(r)
-"
-        echo "    ✓ Keyboard modifier state tracking added"
-    else
-        echo "    ⊘ Already patched"
-    fi
-else
-    echo "  WARNING: input.cpp not found at $INPUT_CPP (keyboard modifier fix skipped)"
-fi
-
-# ── Patch 4c: Sunshine main — Initialize/shutdown agent ──
-
-# Find the main entry point (could be src/main.cpp or src/entry_handler.cpp)
-MAIN_CPP=""
-for candidate in \
-    "$SUNSHINE_DIR/src/main.cpp" \
-    "$SUNSHINE_DIR/src/entry_handler.cpp" \
-    "$SUNSHINE_DIR/src/main.h"; do
-    if [[ -f "$candidate" ]]; then
-        MAIN_CPP="$candidate"
-        break
-    fi
-done
-
-if [[ -n "$MAIN_CPP" && -f "$MAIN_CPP" ]]; then
-    echo "  Patching $(basename "$MAIN_CPP") for agent init/shutdown..."
-
-    if ! grep -q "deragabu_agent" "$MAIN_CPP"; then
-        # Add include at top
-        sed -i.bak '1 i\
-// Deragabu Agent\
-#ifdef __APPLE__\
-extern "C" {\
-#include "deragabu_agent.h"\
-}\
-#endif\
-' "$MAIN_CPP"
-
-        # Insert agent init/shutdown after the opening brace of main().
-        # Handles both styles:
-        #   int main(...) {          (brace on same line)
-        #   int main(...)\n{         (brace on next line)
-        if grep -q "int main(" "$MAIN_CPP"; then
-            awk '
-            /int main\(/ && !done {
-                print
-                # If { is on the same line, insert after this line
-                if ($0 ~ /{/) {
-                    found_brace = 1
-                } else {
-                    # Read next line — it should be the opening {
-                    getline nextline
-                    print nextline
-                    if (nextline ~ /{/) {
-                        found_brace = 1
-                    }
-                }
-                if (found_brace) {
-                    print ""
-                    print "  // Initialize deragabu-agent (cursor overlay + clipboard sync)"
-                    print "  #ifdef __APPLE__"
-                    print "  if (deragabu_agent_init(\"'"$AGENT_BIND_ADDR"'\") != 0) {"
-                    print "    BOOST_LOG(warning) << \"Failed to initialize deragabu agent\";"
-                    print "  }"
-                    print "  atexit([]() { deragabu_agent_shutdown(); });"
-                    print "  #endif"
-                    print ""
-                    done = 1
-                }
-                next
-            }
-            { print }
-            ' "$MAIN_CPP" > "${MAIN_CPP}.patched" && mv "${MAIN_CPP}.patched" "$MAIN_CPP"
-        fi
-        echo "    ✓ Added agent init/shutdown"
-    else
-        echo "    ⊘ Already patched"
-    fi
-else
-    echo "  WARNING: Could not find main entry point. Manual patching needed."
-    echo "  Add to Sunshine's main():"
-    echo '    #include "deragabu_agent.h"'
-    echo '    deragabu_agent_init("0.0.0.0:9000");'
-    echo '    atexit([]() { deragabu_agent_shutdown(); });'
-fi
-
-# ── Patch 4d: CMakeLists.txt — Link agent static library ──
-
-CMAKE_FILE="$SUNSHINE_DIR/CMakeLists.txt"
-
-if [[ -f "$CMAKE_FILE" ]]; then
-    echo "  Patching CMakeLists.txt..."
-
-    if ! grep -q "deragabu_agent" "$CMAKE_FILE"; then
-        # Add the agent library linking in the macOS section
-        # We append to the end of the file inside an APPLE guard
-        cat >> "$CMAKE_FILE" << CMAKE_EOF
-
-# ── Deragabu Agent (Rust static library) ──────────────────────────────────
-if(APPLE)
-  # Path to pre-built agent static library
-  set(DERAGABU_AGENT_LIB "$AGENT_LIB")
-  set(DERAGABU_AGENT_INCLUDE "$AGENT_DIR/include")
-
-  if(EXISTS "\${DERAGABU_AGENT_LIB}")
-    message(STATUS "Deragabu Agent: \${DERAGABU_AGENT_LIB}")
-
-    # Add the static library as an imported target
-    add_library(deragabu_agent STATIC IMPORTED)
-    set_target_properties(deragabu_agent PROPERTIES
-      IMPORTED_LOCATION "\${DERAGABU_AGENT_LIB}"
-    )
-
-    # Link agent + system frameworks it depends on
-    # NOTE: Sunshine uses the plain signature of target_link_libraries in
-    # cmake/targets/common.cmake, so we must also use the plain form here
-    # (mixing plain and keyword signatures on the same target is a CMake error).
-    target_link_libraries(sunshine
-      deragabu_agent
-      "-framework CoreGraphics"
-      "-framework CoreFoundation"
-      "-framework Security"
-      "-framework SystemConfiguration"
-      "-framework IOKit"
-      resolv
-    )
-    target_include_directories(sunshine PRIVATE "\${DERAGABU_AGENT_INCLUDE}")
-
-    # Also configure the test target if it exists
-    if(TARGET test_sunshine)
-      target_link_libraries(test_sunshine
-        deragabu_agent
-        "-framework CoreGraphics"
-        "-framework CoreFoundation"
-        "-framework Security"
-        "-framework SystemConfiguration"
-        "-framework IOKit"
-        resolv
-      )
-      target_include_directories(test_sunshine PRIVATE "\${DERAGABU_AGENT_INCLUDE}")
-    endif()
-  else()
-    message(WARNING "Deragabu Agent library not found at \${DERAGABU_AGENT_LIB}")
-  endif()
-endif()
-CMAKE_EOF
-        echo "    ✓ Added agent linking to CMakeLists.txt"
-    else
-        echo "    ⊘ Already patched"
-    fi
-else
-    echo "  WARNING: CMakeLists.txt not found"
+    echo "    ⊘ Already contains deragabu_agent"
 fi
 
 # Create patch marker

@@ -1,0 +1,46 @@
+From: Deragabu Agent <deragabu@localhost>
+Date: Thu, 01 Jan 2026 00:00:00 +0000
+Subject: [PATCH 6/6] main: initialize and shut down deragabu agent on macOS
+
+On Apple builds only: call deragabu_agent_init() at the start of main()
+to start the WebRTC cursor-overlay + clipboard-sync server, and register
+a shutdown hook via atexit().
+
+The bind address @@AGENT_BIND_ADDR@@ is substituted by the build script
+at patch-application time.
+
+---
+ src/main.cpp | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/src/main.cpp b/src/main.cpp
+index b4117450..782921ca 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -1,3 +1,10 @@
++// Deragabu Agent
++#ifdef __APPLE__
++extern "C" {
++#include "deragabu_agent.h"
++}
++#endif
++
+ /**
+  * @file src/main.cpp
+  * @brief Definitions for the main entry point for Sunshine.
+@@ -116,6 +123,15 @@ void mainThreadLoop(const std::shared_ptr<safe::event_t<bool>> &shutdown_event)
+ }
+ 
+ int main(int argc, char *argv[]) {
++
++  // Initialize deragabu-agent (cursor overlay + clipboard sync)
++  #ifdef __APPLE__
++  if (deragabu_agent_init("@@AGENT_BIND_ADDR@@") != 0) {
++    BOOST_LOG(warning) << "Failed to initialize deragabu agent";
++  }
++  atexit([]() { deragabu_agent_shutdown(); });
++  #endif
++
+   lifetime::argv = argv;
+ 
+   task_pool_util::TaskPool::task_id_t force_shutdown = nullptr;

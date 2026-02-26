@@ -1,0 +1,26 @@
+From: Deragabu Agent <deragabu@localhost>
+Date: Thu, 01 Jan 2026 00:00:00 +0000
+Subject: [PATCH 2/6] cmake: make SUNSHINE_TRAY respect SUNSHINE_ENABLE_TRAY option
+
+constants.cmake unconditionally sets SUNSHINE_TRAY=1 via plain set(),
+which overrides any -DSUNSHINE_ENABLE_TRAY=OFF passed on the cmake
+command line. Wrap it in an if() so the option is respected on macOS.
+
+---
+ cmake/prep/constants.cmake | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/cmake/prep/constants.cmake b/cmake/prep/constants.cmake
+index b80be1e3..ff6e980d 100644
+--- a/cmake/prep/constants.cmake
++++ b/cmake/prep/constants.cmake
+@@ -2,4 +2,8 @@
+ set(SUNSHINE_SOURCE_ASSETS_DIR "${CMAKE_SOURCE_DIR}/src_assets")
+
+ # enable system tray, we will disable this later if we cannot find the required package config on linux
+-set(SUNSHINE_TRAY 1)
++if(SUNSHINE_ENABLE_TRAY)
++  set(SUNSHINE_TRAY 1)
++else()
++  set(SUNSHINE_TRAY 0)
++endif()

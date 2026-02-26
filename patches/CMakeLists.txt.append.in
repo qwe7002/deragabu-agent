@@ -1,0 +1,48 @@
+
+# ── Deragabu Agent (Rust static library) ──────────────────────────────────
+if(APPLE)
+  # Path to pre-built agent static library
+  set(DERAGABU_AGENT_LIB "@AGENT_LIB@")
+  set(DERAGABU_AGENT_INCLUDE "@AGENT_INCLUDE@")
+
+  if(EXISTS "${DERAGABU_AGENT_LIB}")
+    message(STATUS "Deragabu Agent: ${DERAGABU_AGENT_LIB}")
+
+    # Add the static library as an imported target
+    add_library(deragabu_agent STATIC IMPORTED)
+    set_target_properties(deragabu_agent PROPERTIES
+      IMPORTED_LOCATION "${DERAGABU_AGENT_LIB}"
+    )
+
+    # Link agent + system frameworks it depends on
+    # NOTE: Sunshine uses the plain signature of target_link_libraries in
+    # cmake/targets/common.cmake, so we must also use the plain form here
+    # (mixing plain and keyword signatures on the same target is a CMake error).
+    target_link_libraries(sunshine
+      deragabu_agent
+      "-framework CoreGraphics"
+      "-framework CoreFoundation"
+      "-framework Security"
+      "-framework SystemConfiguration"
+      "-framework IOKit"
+      resolv
+    )
+    target_include_directories(sunshine PRIVATE "${DERAGABU_AGENT_INCLUDE}")
+
+    # Also configure the test target if it exists
+    if(TARGET test_sunshine)
+      target_link_libraries(test_sunshine
+        deragabu_agent
+        "-framework CoreGraphics"
+        "-framework CoreFoundation"
+        "-framework Security"
+        "-framework SystemConfiguration"
+        "-framework IOKit"
+        resolv
+      )
+      target_include_directories(test_sunshine PRIVATE "${DERAGABU_AGENT_INCLUDE}")
+    endif()
+  else()
+    message(WARNING "Deragabu Agent library not found at ${DERAGABU_AGENT_LIB}")
+  endif()
+endif()
