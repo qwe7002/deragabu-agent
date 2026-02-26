@@ -22,6 +22,11 @@ produced ~40 px/notch with kCGScrollEventUnitLine, which is jerky.
 Using kCGScrollEventUnitPixel with the value 1:1 (~120px/notch)
 matches macOS default scroll speed (3 lines x 40 px).
 
+Horizontal scroll direction fix: macOS CGEventCreateScrollWheelEvent
+wheel2 (horizontal) uses opposite sign convention from Windows
+WHEEL_DELTA. Negate high_res_distance for hscroll to correct the
+reversed horizontal scroll direction.
+
 ---
  src/platform/macos/input.cpp | 10 ++++++----
  1 file changed, 6 insertions(+), 4 deletions(-)
@@ -60,7 +65,7 @@ index d3bf2005..5acd40d9 100644
      int wheelY = 0;
 -    int wheelX = high_res_distance / 120;
 -    CGEventRef upEvent = CGEventCreateScrollWheelEvent(nullptr, kCGScrollEventUnitLine, 2, wheelY, wheelX);
-+    int wheelX = high_res_distance /* DERAGABU_SCROLL_FIX: 1:1 scale ~120px/notch */;
++    int wheelX = -high_res_distance /* DERAGABU_SCROLL_FIX: 1:1 scale ~120px/notch; negate to match macOS hscroll direction */;
 +    CGEventRef upEvent = CGEventCreateScrollWheelEvent(nullptr, kCGScrollEventUnitPixel /* DERAGABU_SCROLL_FIX */, 2, wheelY, wheelX);
      CGEventPost(kCGHIDEventTap, upEvent);
      CFRelease(upEvent);
