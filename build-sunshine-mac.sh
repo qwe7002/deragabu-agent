@@ -210,6 +210,12 @@ apply_patch "$PATCHES_DIR/0004-macos-display-agent-overlay-control.patch" \
 #   kCGEventKeyUp whose kCGKeyboardEventAutorepeat=1, so the key never
 #   releases and the character repeats indefinitely after finger-lift.
 #   → Fix: always clear kCGKeyboardEventAutorepeat to 0 before posting
+# Keyboard Bug D: keycode is set BEFORE CGEventSetType in the original code;
+#   CGEventSetType can reinitialise fields when the event type changes
+#   (kCGEventKeyDown → kCGEventKeyUp), leaving keycode=0 in the keyup event.
+#   macOS posts the keyup for a different (non-held) key so the held key
+#   is never released.
+#   → Fix: call CGEventSetType first, then set keycode/autorepeat/flags
 # Scroll: /120 + kCGScrollEventUnitLine gave ~40 px/notch (jerky)
 #   → 1:1 value + kCGScrollEventUnitPixel gives ~120 px/notch (smooth)
 apply_patch "$PATCHES_DIR/0005-macos-input-scroll-and-keyboard-fix.patch" \

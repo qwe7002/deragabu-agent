@@ -25,6 +25,16 @@ and the character repeats indefinitely after release.
 Fix: explicitly clear kCGKeyboardEventAutorepeat to 0 for every regular
 key event before posting.
 
+Bug D (keyboard, keyup ordering): calling CGEventSetIntegerValueField
+to set the keycode BEFORE CGEventSetType causes CGEventSetType to
+potentially overwrite or reinitialise the keycode field when the event
+type changes (e.g. kCGEventKeyDown → kCGEventKeyUp). The result is a
+keyup event posted with keycode 0 which does not match the held key, so
+the key is never released.
+Fix: call CGEventSetType first so that all subsequent field writes
+(keycode, autorepeat, flags) are applied to the final event type and
+are not clobbered by the type-change logic.
+
 Scroll: Moonlight sends high_res_distance in 120ths-of-a-line units
 (Windows WHEEL_DELTA convention). The previous /120 reduction
 produced ~40 px/notch with kCGScrollEventUnitLine, which is jerky.
@@ -37,30 +47,32 @@ WHEEL_DELTA. Negate high_res_distance for hscroll to correct the
 reversed horizontal scroll direction.
 
 ---
- src/platform/macos/input.cpp | 11 +++++++----
- 1 file changed, 7 insertions(+), 4 deletions(-)
+ src/platform/macos/input.cpp | 15 +++++++++------
+ 1 file changed, 9 insertions(+), 6 deletions(-)
 
 diff --git a/src/platform/macos/input.cpp b/src/platform/macos/input.cpp
 index d3bf2005..5acd40d9 100644
 --- a/src/platform/macos/input.cpp
 +++ b/src/platform/macos/input.cpp
-@@ -285,10 +285,13 @@ const KeyCodeMap kKeyCodesMap[] = {
+@@ -285,10 +285,15 @@ const KeyCodeMap kKeyCodesMap[] = {
 
        macos_input->kb_flags = release ? macos_input->kb_flags & ~mask : macos_input->kb_flags | mask;
        CGEventSetType(event, kCGEventFlagsChanged);
 +      CGEventSetIntegerValueField(event, kCGKeyboardEventKeycode, key); // DERAGABU_KBD_FIX: set modifier key own keycode in FlagsChanged event
        CGEventSetFlags(event, macos_input->kb_flags);
      } else {
-       CGEventSetIntegerValueField(event, kCGKeyboardEventKeycode, key);
-       CGEventSetType(event, release ? kCGEventKeyUp : kCGEventKeyDown);
+-      CGEventSetIntegerValueField(event, kCGKeyboardEventKeycode, key);
+-      CGEventSetType(event, release ? kCGEventKeyUp : kCGEventKeyDown);
++      CGEventSetType(event, release ? kCGEventKeyUp : kCGEventKeyDown); // DERAGABU_KBD_FIX: type first so CGEventSetType cannot clobber subsequent field writes
++      CGEventSetIntegerValueField(event, kCGKeyboardEventKeycode, key); // DERAGABU_KBD_FIX: set keycode after type change to prevent clobbering
 +      CGEventSetIntegerValueField(event, kCGKeyboardEventAutorepeat, 0); // DERAGABU_KBD_FIX: clear stale autorepeat flag so macOS does not silently drop keyup events
 +      CGEventSetFlags(event, macos_input->kb_flags); // DERAGABU_KBD_FIX: propagate Shift/Ctrl/Alt/Cmd to regular key events
      }
 
      CGEventPost(kCGHIDEventTap, event);
-@@ -449,17 +451,17 @@ const KeyCodeMap kKeyCodesMap[] = {
+@@ -449,17 +454,17 @@ const KeyCodeMap kKeyCodesMap[] = {
    }
- 
+
    void scroll(input_t &input, const int high_res_distance) {
 -    int wheelY = high_res_distance / 120;
 +    int wheelY = high_res_distance /* DERAGABU_SCROLL_FIX: 1:1 scale ~120px/notch */;
@@ -70,7 +82,7 @@ index d3bf2005..5acd40d9 100644
      CGEventPost(kCGHIDEventTap, upEvent);
      CFRelease(upEvent);
    }
- 
+
    void hscroll(input_t &input, int high_res_distance) {
      int wheelY = 0;
 -    int wheelX = high_res_distance / 120;
