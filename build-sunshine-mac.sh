@@ -205,6 +205,11 @@ apply_patch "$PATCHES_DIR/0004-macos-display-agent-overlay-control.patch" \
 #   → Enter (or last key) appears held while any modifier is pressed
 # Keyboard Bug B: regular key events lack CGEventSetFlags(kb_flags)
 #   → Shift+letter produces lowercase, Ctrl/Alt shortcuts fail
+# Keyboard Bug C: kb_event is reused; after auto-repeat keydowns the
+#   kCGKeyboardEventAutorepeat field stays 1. macOS silently drops any
+#   kCGEventKeyUp whose kCGKeyboardEventAutorepeat=1, so the key never
+#   releases and the character repeats indefinitely after finger-lift.
+#   → Fix: always clear kCGKeyboardEventAutorepeat to 0 before posting
 # Scroll: /120 + kCGScrollEventUnitLine gave ~40 px/notch (jerky)
 #   → 1:1 value + kCGScrollEventUnitPixel gives ~120 px/notch (smooth)
 apply_patch "$PATCHES_DIR/0005-macos-input-scroll-and-keyboard-fix.patch" \
@@ -347,6 +352,7 @@ echo "║  ✓ capturesCursor=NO at init (best-effort HW cursor hide)  ║"
 echo "║  ✓ Clipboard sync (text + images, bidirectional)           ║"
 echo "║  ✓ Mouse scroll fix (pixel-based smooth scrolling)         ║"
 echo "║  ✓ Keyboard modifier fix (Shift/Ctrl/Alt propagation)      ║"
+echo "║  ✓ Keyboard keyup fix (no stuck keys after key release)    ║"
 echo "║  ✓ Agent auto-start/stop with Sunshine lifecycle           ║"
 echo "║                                                            ║"
 
